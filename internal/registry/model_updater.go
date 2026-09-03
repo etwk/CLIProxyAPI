@@ -179,6 +179,7 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 			log.Warnf("models parse failed from %s: %v", url, err)
 			continue
 		}
+		normalizeClaudeFable51Capabilities(&parsed)
 		if err := validateModelsCatalog(&parsed); err != nil {
 			log.Warnf("models validate failed from %s: %v", url, err)
 			continue
@@ -300,6 +301,7 @@ func loadModelsFromBytes(data []byte, source string) error {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return fmt.Errorf("%s: decode models catalog: %w", source, err)
 	}
+	normalizeClaudeFable51Capabilities(&parsed)
 	if err := validateModelsCatalog(&parsed); err != nil {
 		return fmt.Errorf("%s: validate models catalog: %w", source, err)
 	}
@@ -308,6 +310,22 @@ func loadModelsFromBytes(data []byte, source string) error {
 	modelsCatalogStore.data = &parsed
 	modelsCatalogStore.mu.Unlock()
 	return nil
+}
+
+func normalizeClaudeFable51Capabilities(data *staticModelsJSON) {
+	if data == nil {
+		return
+	}
+	for _, model := range data.Claude {
+		if model == nil || model.ID != "claude-fable-5-1" {
+			continue
+		}
+		model.Thinking = &ThinkingSupport{
+			DynamicAllowed: true,
+			AlwaysOn:       true,
+			Levels:         []string{"low", "medium", "high", "xhigh", "max"},
+		}
+	}
 }
 
 func getModels() *staticModelsJSON {

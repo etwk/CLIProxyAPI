@@ -315,6 +315,7 @@ func thinkingSupportToPlugin(thinking *internalregistry.ThinkingSupport) *Thinki
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
 		DynamicAllowed: thinking.DynamicAllowed,
+		AlwaysOn:       thinking.AlwaysOn,
 		Levels:         cloneStringSlice(thinking.Levels),
 	}
 }

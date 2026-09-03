@@ -20,6 +20,10 @@ const (
 	// Example: claude-haiku-4-5 does not have thinking capability
 	ErrThinkingNotSupported ErrorCode = "THINKING_NOT_SUPPORTED"
 
+	// ErrThinkingCannotBeDisabled indicates the model requires thinking.
+	// Example: Claude Fable 5.1 uses always-on adaptive thinking.
+	ErrThinkingCannotBeDisabled ErrorCode = "THINKING_CANNOT_BE_DISABLED"
+
 	// ErrLevelNotSupported indicates the model does not support level mode.
 	// Example: using level with a budget-only model
 	ErrLevelNotSupported ErrorCode = "LEVEL_NOT_SUPPORTED"
