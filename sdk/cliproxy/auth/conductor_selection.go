@@ -505,6 +505,13 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 // priority tiers so an established binding can be validated instead of being preempted by a
 // recovered higher-priority credential.
 func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
+	weightSelector := selector
+	if affinity, ok := selector.(*SessionAffinitySelector); ok {
+		weightSelector = affinity.fallback
+	}
+	if _, weighted := weightSelector.(*WeightedRoundRobinSelector); weighted {
+		auths = positiveWeightAuths(auths)
+	}
 	if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
 		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
 		if err != nil {
@@ -1532,7 +1539,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if !handled {
 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+		selected, errPick = pickAvailableAuth(selectorCtx, selector, provider, selectionArgForSelector(selector, model), opts, availableAuthCandidates(selectorAuths))
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
@@ -1865,7 +1872,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	if !handled {
 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+		selected, errPick = pickAvailableAuth(selectorCtx, selector, "mixed", selectionArgForSelector(selector, model), opts, availableAuthCandidates(selectorAuths))
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)

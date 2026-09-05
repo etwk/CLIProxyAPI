@@ -25,6 +25,30 @@ import (
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 )
 
+// availableAuthCandidates are ID-sorted credential snapshots whose availability
+// has already been checked against the resolved upstream model. Selection may
+// narrow priority or honor session bindings, but must not recheck an alias or
+// the credential's aggregate model cooldown.
+type availableAuthCandidates []*Auth
+
+func pickAvailableAuth(ctx context.Context, selector Selector, provider, model string, opts cliproxyexecutor.Options, auths availableAuthCandidates) (*Auth, error) {
+	// Only concrete built-ins own this path. A custom selector may embed a
+	// built-in and override Pick; dispatching through a private interface would
+	// accidentally bypass that override via the promoted method.
+	switch selector := selector.(type) {
+	case *RoundRobinSelector:
+		return selector.pickAvailable(ctx, provider, model, opts, auths)
+	case *WeightedRoundRobinSelector:
+		return selector.pickAvailable(ctx, provider, model, opts, auths)
+	case *FillFirstSelector:
+		return selector.pickAvailable(ctx, provider, model, opts, auths)
+	case *SessionAffinitySelector:
+		return selector.pickAvailable(ctx, provider, model, opts, auths)
+	default:
+		return selector.Pick(ctx, provider, model, opts, auths)
+	}
+}
+
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
 //
 // Rotation continues from the identity of the previous pick rather than from a numeric
@@ -587,13 +611,16 @@ func highestPriorityAuths(auths []*Auth) []*Auth {
 
 // Pick selects the next available auth for the provider in a round-robin manner.
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	_ = opts
 	now := time.Now()
 	available, err := getAvailableAuths(auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
-	available = preferCodexWebsocketAuths(ctx, provider, available)
+	return s.pickAvailable(ctx, provider, model, opts, availableAuthCandidates(available))
+}
+
+func (s *RoundRobinSelector) pickAvailable(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths availableAuthCandidates) (*Auth, error) {
+	available := preferCodexWebsocketAuths(ctx, provider, auths)
 	key := provider + ":" + canonicalModelKey(model)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -646,12 +673,15 @@ func positiveWeightAuths(auths []*Auth) []*Auth {
 
 // Pick selects the next available auth using smooth weighted round-robin.
 func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	_ = opts
 	available, errAvailable := getAvailableAuths(positiveWeightAuths(auths), provider, model, time.Now())
 	if errAvailable != nil {
 		return nil, errAvailable
 	}
-	available = preferCodexWebsocketAuths(ctx, provider, available)
+	return s.pickAvailable(ctx, provider, model, opts, availableAuthCandidates(available))
+}
+
+func (s *WeightedRoundRobinSelector) pickAvailable(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths availableAuthCandidates) (*Auth, error) {
+	available := preferCodexWebsocketAuths(ctx, provider, auths)
 	stateModel := weightedSelectorStateModel(ctx, model)
 	key := provider + ":" + canonicalModelKey(stateModel)
 
@@ -785,13 +815,16 @@ func saturatingAddInt64(value, delta int64) int64 {
 
 // Pick selects the first available auth for the provider in a deterministic manner.
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	_ = opts
 	now := time.Now()
 	available, err := getAvailableAuths(auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
-	available = preferCodexWebsocketAuths(ctx, provider, available)
+	return s.pickAvailable(ctx, provider, model, opts, availableAuthCandidates(available))
+}
+
+func (s *FillFirstSelector) pickAvailable(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths availableAuthCandidates) (*Auth, error) {
+	available := preferCodexWebsocketAuths(ctx, provider, auths)
 	return available[0], nil
 }
 
@@ -943,6 +976,17 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
 // that may be supported by different auth credentials, and to avoid cross-provider conflicts.
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
+		auths = positiveWeightAuths(auths)
+	}
+	available, errAvailable := getAvailableAuthsAcrossPriorities(auths, provider, model, time.Now())
+	if errAvailable != nil {
+		return nil, errAvailable
+	}
+	return s.pickAvailable(ctx, provider, model, opts, availableAuthCandidates(available))
+}
+
+func (s *SessionAffinitySelector) pickAvailable(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths availableAuthCandidates) (*Auth, error) {
 	entry := selectorLogEntry(ctx)
 	if opts.Metadata == nil {
 		opts.Metadata = make(map[string]any)
@@ -977,27 +1021,12 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if primaryID != "" && opts.Metadata != nil {
 		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = primaryID
 	}
-	now := time.Now()
-	availabilityCandidates := auths
-	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
-		availabilityCandidates = positiveWeightAuths(auths)
-	}
+	available := auths
+	fallbackAuths := availableAuthCandidates(highestPriorityAuths(available))
 	if primaryID == "" {
-		fallbackAuths, errAvailable := getAvailableAuths(availabilityCandidates, provider, model, now)
-		if errAvailable != nil {
-			return nil, errAvailable
-		}
 		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
-		return s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+		return pickAvailableAuth(ctx, s.fallback, provider, model, opts, fallbackAuths)
 	}
-
-	// A single availability pass serves both lookups: the bound credential is validated against
-	// every priority tier, while the fallback selector keeps seeing only the highest tier.
-	available, err := getAvailableAuthsAcrossPriorities(availabilityCandidates, provider, model, now)
-	if err != nil {
-		return nil, err
-	}
-	fallbackAuths := highestPriorityAuths(available)
 
 	modelKey := canonicalModelKey(model)
 	cacheKey := provider + "::" + primaryID + "::" + modelKey
@@ -1029,7 +1058,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			}
 		}
 		// Cached auth not available, reselect via fallback selector for even distribution
-		auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+		auth, err := pickAvailableAuth(ctx, s.fallback, provider, model, opts, fallbackAuths)
 		if err != nil {
 			return nil, err
 		}
@@ -1059,7 +1088,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		}
 	}
 
-	auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	auth, err := pickAvailableAuth(ctx, s.fallback, provider, model, opts, fallbackAuths)
 	if err != nil {
 		return nil, err
 	}
@@ -1075,7 +1104,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	return auth, nil
 }
 
-func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth, entry *log.Entry) (*Auth, bool, error) {
+func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, available availableAuthCandidates, entry *log.Entry) (*Auth, bool, error) {
 	if s == nil || s.matcher == nil {
 		return nil, false, nil
 	}
@@ -1096,18 +1125,9 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		opts.Metadata[cliproxyexecutor.LCPMinPrefixLengthMetadataKey] = minPrefixLength
 	}
 
-	availabilityCandidates := auths
-	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
-		availabilityCandidates = positiveWeightAuths(auths)
-	}
-	available, errAvailable := getAvailableAuthsAcrossPriorities(availabilityCandidates, provider, model, time.Now())
-	if errAvailable != nil {
-		return nil, true, errAvailable
-	}
-
 	if match, ok := s.matcher.MatchFingerprints(namespace, fingerprints, minPrefixLength); ok {
 		for _, auth := range available {
-			if auth == nil || auth.ID != match.AuthID {
+			if auth.ID != match.AuthID {
 				continue
 			}
 			if match.SessionID != "" {
@@ -1137,8 +1157,8 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		}
 	}
 
-	fallbackAuths := highestPriorityAuths(available)
-	auth, errPick := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	fallbackAuths := availableAuthCandidates(highestPriorityAuths(available))
+	auth, errPick := pickAvailableAuth(ctx, s.fallback, provider, model, opts, fallbackAuths)
 	if errPick != nil {
 		return nil, true, errPick
 	}
