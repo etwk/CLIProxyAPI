@@ -188,6 +188,8 @@ type ThinkingSupport struct {
 	ZeroAllowed bool
 	// DynamicAllowed reports whether automatic reasoning budget selection is supported.
 	DynamicAllowed bool
+	// AlwaysOn reports whether reasoning cannot be disabled.
+	AlwaysOn bool
 	// Levels lists supported named reasoning levels.
 	Levels []string
 }

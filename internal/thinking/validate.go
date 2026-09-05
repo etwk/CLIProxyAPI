@@ -53,6 +53,10 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 		return &config, nil
 	}
 
+	if support.AlwaysOn && thinkingConfigDisablesThinking(config) {
+		return nil, NewThinkingErrorWithModel(ErrThinkingCannotBeDisabled, "thinking cannot be disabled for this model", model)
+	}
+
 	// allowClampUnsupported determines whether to clamp unsupported levels instead of returning an error.
 	// This applies when crossing provider families (e.g., openai→gemini, claude→gemini) and the target
 	// model supports discrete levels. Same-family conversions require strict validation.
@@ -188,6 +192,19 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	}
 
 	return &config, nil
+}
+
+func thinkingConfigDisablesThinking(config ThinkingConfig) bool {
+	switch config.Mode {
+	case ModeNone:
+		return true
+	case ModeBudget:
+		return config.Budget == 0
+	case ModeLevel:
+		return config.Level == LevelNone
+	default:
+		return false
+	}
 }
 
 // convertAutoToMidRange converts ModeAuto to a mid-range value when dynamic is not allowed.

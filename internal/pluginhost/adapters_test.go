@@ -46,8 +46,9 @@ func TestPluginModelInfoToRegistryModelInfoClonesThinkingAndSlices(t *testing.T)
 		Thinking: &pluginapi.ThinkingSupport{
 			Min:            1,
 			Max:            2,
-			ZeroAllowed:    true,
+			ZeroAllowed:    false,
 			DynamicAllowed: true,
+			AlwaysOn:       true,
 			Levels:         []string{"low", "high"},
 		},
 		UserDefined: true,
@@ -63,7 +64,7 @@ func TestPluginModelInfoToRegistryModelInfoClonesThinkingAndSlices(t *testing.T)
 	if got.Thinking == nil {
 		t.Fatal("Thinking = nil, want converted thinking support")
 	}
-	if got.Thinking.Min != 1 || got.Thinking.Max != 2 || !got.Thinking.ZeroAllowed || !got.Thinking.DynamicAllowed || fmt.Sprint(got.Thinking.Levels) != "[low high]" {
+	if got.Thinking.Min != 1 || got.Thinking.Max != 2 || got.Thinking.ZeroAllowed || !got.Thinking.DynamicAllowed || !got.Thinking.AlwaysOn || fmt.Sprint(got.Thinking.Levels) != "[low high]" {
 		t.Fatalf("Thinking = %#v, want copied thinking support", got.Thinking)
 	}
 
@@ -138,8 +139,9 @@ func TestRegisterModelsRegistersProviderModelsAndClientID(t *testing.T) {
 						Thinking: &pluginapi.ThinkingSupport{
 							Min:            1,
 							Max:            2,
-							ZeroAllowed:    true,
+							ZeroAllowed:    false,
 							DynamicAllowed: true,
+							AlwaysOn:       true,
 							Levels:         []string{"low"},
 						},
 						UserDefined: true,
@@ -169,8 +171,8 @@ func TestRegisterModelsRegistersProviderModelsAndClientID(t *testing.T) {
 		model.SupportedInputModalities[0] != "text" || model.SupportedOutputModalities[0] != "text" || !model.UserDefined {
 		t.Fatalf("registered model = %#v, want converted fields", model)
 	}
-	if model.Thinking == nil || model.Thinking.Min != 1 || model.Thinking.Max != 2 || !model.Thinking.ZeroAllowed ||
-		!model.Thinking.DynamicAllowed || model.Thinking.Levels[0] != "low" {
+	if model.Thinking == nil || model.Thinking.Min != 1 || model.Thinking.Max != 2 || model.Thinking.ZeroAllowed ||
+		!model.Thinking.DynamicAllowed || !model.Thinking.AlwaysOn || model.Thinking.Levels[0] != "low" {
 		t.Fatalf("registered thinking = %#v, want converted thinking", model.Thinking)
 	}
 }
