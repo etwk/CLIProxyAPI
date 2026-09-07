@@ -24,6 +24,10 @@ func TestApplyThinkingWithModelInfoMapsCrossFamilyHighIntent(t *testing.T) {
 		{name: "max stays max", source: "max", supported: []string{"high", "xhigh", "max"}, want: "max"},
 		{name: "max prefers xhigh", source: "max", supported: []string{"high", "xhigh"}, want: "xhigh"},
 		{name: "max falls back to high", source: "max", supported: []string{"high"}, want: "high"},
+		{name: "ultra stays ultra", source: "ultra", supported: []string{"high", "xhigh", "max", "ultra"}, want: "ultra"},
+		{name: "ultra prefers max", source: "ultra", supported: []string{"high", "xhigh", "max"}, want: "max"},
+		{name: "ultra prefers xhigh", source: "ultra", supported: []string{"high", "xhigh"}, want: "xhigh"},
+		{name: "ultra falls back to high", source: "ultra", supported: []string{"high"}, want: "high"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -76,6 +80,22 @@ func TestApplyThinkingWithModelInfoMapsResponsesToCodexHighIntent(t *testing.T) 
 	}
 	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "xhigh" {
 		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, out)
+	}
+}
+
+func TestApplyThinkingWithModelInfoPreservesAstraUltraEffort(t *testing.T) {
+	modelInfo := &registry.ModelInfo{
+		ID:       "gpt-6-astra",
+		Type:     "openai",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+	}
+	body := []byte(`{"reasoning":{"effort":"ultra"}}`)
+	out, err := thinking.ApplyThinkingWithModelInfo(body, body, "gpt-6-astra", "openai-response", "codex", "codex", modelInfo)
+	if err != nil {
+		t.Fatalf("ApplyThinkingWithModelInfo() error = %v", err)
+	}
+	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "ultra" {
+		t.Fatalf("reasoning.effort = %q, want ultra; body=%s", got, out)
 	}
 }
 

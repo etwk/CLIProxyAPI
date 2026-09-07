@@ -10,7 +10,7 @@ func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing
 }
 
 func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
-	const wantUA = "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)"
+	const wantUA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
 	got := ModelOverrideHeaders("gpt-5.6-luna")
 	if got == nil {
 		t.Fatal("ModelOverrideHeaders(gpt-5.6-luna) = nil, want headers")
@@ -20,6 +20,33 @@ func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
 	}
 	if got := ModelOverrideHeaders("gpt-5.4"); got != nil {
 		t.Fatalf("ModelOverrideHeaders(gpt-5.4) = %#v, want nil", got)
+	}
+}
+
+func TestCodexChannelsAdvertiseAstraUltraReasoning(t *testing.T) {
+	channels := map[string]func() []*ModelInfo{
+		"codex-team": GetCodexTeamModels,
+		"codex-plus": GetCodexPlusModels,
+		"codex-pro":  GetCodexProModels,
+	}
+	for channel, models := range channels {
+		t.Run(channel, func(t *testing.T) {
+			for _, model := range models() {
+				if model == nil || model.ID != "gpt-6-astra" {
+					continue
+				}
+				if model.Thinking == nil {
+					t.Fatal("gpt-6-astra has no thinking metadata")
+				}
+				for _, level := range model.Thinking.Levels {
+					if level == "ultra" {
+						return
+					}
+				}
+				t.Fatalf("gpt-6-astra thinking levels = %v, want ultra support", model.Thinking.Levels)
+			}
+			t.Fatal("gpt-6-astra is missing")
+		})
 	}
 }
 

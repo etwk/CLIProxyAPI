@@ -6,7 +6,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
-func TestCodexClientModelsResponseAstraKeepsUltraModeAndWireEffort(t *testing.T) {
+func TestCodexClientModelsResponseAstraKeepsUltraClientAndWireEffort(t *testing.T) {
 	response := BuildResponseForClient([]map[string]any{{"id": "gpt-6-astra"}}, nil, false, "0.153.3")
 	models := response["models"].([]map[string]any)
 	if len(models) != 1 {
@@ -30,9 +30,13 @@ func TestCodexClientModelsResponseAstraKeepsUltraModeAndWireEffort(t *testing.T)
 	if model == nil || model.Thinking == nil {
 		t.Fatal("missing Astra upstream thinking capabilities")
 	}
+	hasWireUltra := false
 	for _, effort := range model.Thinking.Levels {
 		if effort == "ultra" {
-			t.Fatal("client-only Ultra mode must not be advertised as a wire effort")
+			hasWireUltra = true
 		}
+	}
+	if !hasWireUltra {
+		t.Fatal("Astra upstream thinking capabilities lost Ultra wire effort")
 	}
 }
