@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -179,7 +181,7 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 			log.Warnf("models parse failed from %s: %v", url, err)
 			continue
 		}
-		normalizeClaudeFable51Capabilities(&parsed)
+		normalizeKnownModelCapabilities(&parsed)
 		if err := validateModelsCatalog(&parsed); err != nil {
 			log.Warnf("models validate failed from %s: %v", url, err)
 			continue
@@ -217,6 +219,7 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"kimi", oldData.Kimi, newData.Kimi},
 		{"antigravity", oldData.Antigravity, newData.Antigravity},
 		{"xai", oldData.XAI, newData.XAI},
+		{"devin", oldData.Devin, newData.Devin},
 	}
 
 	seen := make(map[string]bool, len(sections))
@@ -233,13 +236,19 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 	return changed
 }
 
-// modelSectionChanged reports whether two model slices differ.
+// modelSectionChanged reports whether two model slices differ, including
+// internal metadata that is intentionally omitted from normal JSON responses.
 func modelSectionChanged(a, b []*ModelInfo) bool {
 	if len(a) != len(b) {
 		return true
 	}
 	if len(a) == 0 {
 		return false
+	}
+	for i := range a {
+		if a[i] != nil && b[i] != nil && !reflect.DeepEqual(a[i].NativeCapabilities, b[i].NativeCapabilities) {
+			return true
+		}
 	}
 	aj, err1 := json.Marshal(a)
 	bj, err2 := json.Marshal(b)
@@ -301,7 +310,7 @@ func loadModelsFromBytes(data []byte, source string) error {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return fmt.Errorf("%s: decode models catalog: %w", source, err)
 	}
-	normalizeClaudeFable51Capabilities(&parsed)
+	normalizeKnownModelCapabilities(&parsed)
 	if err := validateModelsCatalog(&parsed); err != nil {
 		return fmt.Errorf("%s: validate models catalog: %w", source, err)
 	}
@@ -312,7 +321,9 @@ func loadModelsFromBytes(data []byte, source string) error {
 	return nil
 }
 
-func normalizeClaudeFable51Capabilities(data *staticModelsJSON) {
+// normalizeKnownModelCapabilities preserves verified capabilities that are not
+// yet represented by the upstream catalog, for embedded loads and remote refreshes.
+func normalizeKnownModelCapabilities(data *staticModelsJSON) {
 	if data == nil {
 		return
 	}
@@ -324,6 +335,22 @@ func normalizeClaudeFable51Capabilities(data *staticModelsJSON) {
 			DynamicAllowed: true,
 			AlwaysOn:       true,
 			Levels:         []string{"low", "medium", "high", "xhigh", "max"},
+		}
+	}
+	for _, models := range [][]*ModelInfo{data.CodexTeam, data.CodexPlus, data.CodexPro} {
+		for _, model := range models {
+			if model == nil || model.ID != "gpt-6-astra" {
+				continue
+			}
+			if model.Thinking == nil {
+				model.Thinking = &ThinkingSupport{}
+			}
+			if len(model.Thinking.Levels) == 0 {
+				model.Thinking.Levels = []string{"low", "medium", "high", "xhigh", "max"}
+			}
+			if !slices.Contains(model.Thinking.Levels, "ultra") {
+				model.Thinking.Levels = append(model.Thinking.Levels, "ultra")
+			}
 		}
 	}
 }

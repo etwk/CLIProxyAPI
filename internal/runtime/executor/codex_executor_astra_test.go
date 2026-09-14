@@ -19,7 +19,7 @@ import (
 // remain available when the catalog has no overrides or another credential
 // registers the same model without them (the remaining issue in PR #5522).
 func TestCodexHeadersSupportAstraWithoutModelOverrides(t *testing.T) {
-	const wantUA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	const wantUA = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
 	for _, provider := range []string{"codex", "openai-compatibility"} {
 		t.Run(provider, func(t *testing.T) {
 			reg := registry.GetGlobalRegistry()
@@ -30,7 +30,7 @@ func TestCodexHeadersSupportAstraWithoutModelOverrides(t *testing.T) {
 			cfg := &config.Config{}
 			req := httptest.NewRequest(http.MethodPost, "https://example.com/responses", nil)
 			applyCodexHeaders(req, auth, "test-token", true, cfg)
-			wsHeaders := applyCodexWebsocketHeaders(context.Background(), nil, auth, "test-token", cfg)
+			wsHeaders := applyCodexWebsocketHeaders(context.Background(), nil, auth, "test-token", cfg, false)
 			for transport, headers := range map[string]http.Header{"http": req.Header, "websocket": wsHeaders} {
 				applyModelHeaderOverrides(headers, "gpt-6-astra")
 				if got := headers.Get("User-Agent"); got != wantUA {
@@ -71,11 +71,9 @@ func TestCodexExecutorAstraPreservesNativeRequest(t *testing.T) {
 				Attributes: map[string]string{"base_url": server.URL},
 				Metadata:   map[string]any{"access_token": "test-token"},
 			}
-			// Codex resolves its local Ultra mode to Astra's advertised
-			// multi_agent_reasoning_effort (xhigh) before making API requests.
 			req := cliproxyexecutor.Request{
 				Model:   "gpt-6-astra",
-				Payload: []byte(`{"model":"gpt-6-astra","reasoning":{"effort":"xhigh"},"input":[{"type":"message","role":"user","content":"hello"},{"type":"configuration_update","reasoning":{"effort":"max"}}],"tools":[{"type":"function","name":"lookup","description":"Look up a value","parameters":{"type":"object","properties":{}},"async":true}]}`),
+				Payload: []byte(`{"model":"gpt-6-astra","reasoning":{"effort":"ultra"},"input":[{"type":"message","role":"user","content":"hello"},{"type":"configuration_update","reasoning":{"effort":"max"}}],"tools":[{"type":"function","name":"lookup","description":"Look up a value","parameters":{"type":"object","properties":{}},"async":true}]}`),
 			}
 			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Stream: stream}
 			if stream {
@@ -94,7 +92,7 @@ func TestCodexExecutorAstraPreservesNativeRequest(t *testing.T) {
 			body := <-captured
 			for path, want := range map[string]string{
 				"model":                    "gpt-6-astra",
-				"reasoning.effort":         "xhigh",
+				"reasoning.effort":         "ultra",
 				"input.1.type":             "configuration_update",
 				"input.1.reasoning.effort": "max",
 				"tools.0.async":            "true",

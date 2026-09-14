@@ -1,11 +1,30 @@
 package helps
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/tidwall/gjson"
 )
+
+func TestNormalizeClaudeToolResultsTextOnlyPreservesMessageBoundaries(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","is_error":true,"content":[{"type":"text","text":"result"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]},{"type":"image","source":{"type":"url","url":"https://example.com/user.png"}}]}]}`)
+	original := bytes.Clone(input)
+	got := NormalizeClaudeToolResultsTextOnly(input)
+	if gjson.GetBytes(got, "messages.0.content.0.content").String() != "result\n\n"+openAIToolResultImageOmittedText {
+		t.Fatalf("tool result not flattened: %s", got)
+	}
+	if gjson.GetBytes(got, "messages.0.content.0.tool_use_id").String() != "call_1" || !gjson.GetBytes(got, "messages.0.content.0.is_error").Bool() {
+		t.Fatalf("tool result metadata changed: %s", got)
+	}
+	if gjson.GetBytes(got, "messages.0.content.1").Raw != gjson.GetBytes(input, "messages.0.content.1").Raw {
+		t.Fatal("ordinary user image changed")
+	}
+	if !bytes.Equal(input, original) || !bytes.Equal(got, NormalizeClaudeToolResultsTextOnly(got)) {
+		t.Fatal("normalization mutated its input or was not idempotent")
+	}
+}
 
 func TestNormalizeOpenAIToolResultsTextOnly(t *testing.T) {
 	input := []byte(`{"messages":[

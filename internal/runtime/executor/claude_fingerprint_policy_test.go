@@ -364,7 +364,7 @@ func TestClaudeExecutor_ClaudeCodeCLIFingerprintOnThirdPartyGateway(t *testing.T
 	if got := seenHeaders.Get("Authorization"); got != "Bearer key-claude-code-cli-fp" {
 		t.Fatalf("Authorization = %q, want API key bearer", got)
 	}
-	wantBetas := claudeCodeCLIBetas(payload, nil, true, false)
+	wantBetas := claudeCodeCLIBetas(payload, nil, true)
 	if got := seenHeaders.Get("Anthropic-Beta"); got != wantBetas {
 		t.Fatalf("Anthropic-Beta = %q, want %q", got, wantBetas)
 	}

@@ -12,26 +12,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
-type overrideEmbeddedRoundRobinSelector struct {
-	RoundRobinSelector
-}
-
-func (s *overrideEmbeddedRoundRobinSelector) Pick(_ context.Context, _, _ string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	return auths[len(auths)-1], nil
-}
-
-func TestPickAvailableAuthHonorsCustomEmbeddedSelector(t *testing.T) {
-	first := &Auth{ID: "first"}
-	last := &Auth{ID: "last"}
-	selected, errPick := pickAvailableAuth(context.Background(), &overrideEmbeddedRoundRobinSelector{}, "codex", "alias", cliproxyexecutor.Options{}, availableAuthCandidates{first, last})
-	if errPick != nil {
-		t.Fatal(errPick)
-	}
-	if selected != last {
-		t.Fatal("custom Pick override was bypassed by the embedded built-in selector")
-	}
-}
-
 func TestManagerAliasQuotaFailoverWithUnobservedTargetModel(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 	for name, newSelector := range map[string]func() Selector{

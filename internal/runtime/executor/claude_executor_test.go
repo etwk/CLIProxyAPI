@@ -23,15 +23,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	"google.golang.org/protobuf/encoding/protowire"
 )
 
 func resetClaudeDeviceProfileCache() {
@@ -49,58 +45,6 @@ func claudeOAuthTestMetadata() map[string]any {
 
 func malformedClaudeTreeSignatureForClaudeExecutorTest() string {
 	return base64.StdEncoding.EncodeToString([]byte{0x12, 0xFF, 0xFE, 0xFD})
-}
-
-func modelFreeClaudeCAISSignatureForExecutorTest(envelopeVersion, channelID uint64) string {
-	channel := protowire.AppendTag(nil, 1, protowire.VarintType)
-	channel = protowire.AppendVarint(channel, channelID)
-
-	container := protowire.AppendTag(nil, 1, protowire.BytesType)
-	container = protowire.AppendBytes(container, channel)
-	container = protowire.AppendTag(container, 5, protowire.BytesType)
-	container = protowire.AppendBytes(container, []byte("synthetic-model-free-carrier"))
-
-	payload := protowire.AppendTag(nil, 1, protowire.VarintType)
-	payload = protowire.AppendVarint(payload, envelopeVersion)
-	payload = protowire.AppendTag(payload, 2, protowire.BytesType)
-	payload = protowire.AppendBytes(payload, container)
-	return base64.StdEncoding.EncodeToString(payload)
-}
-
-// modelTaggedClaudeCAISSignatureForExecutorTest builds a structurally valid,
-// Claude-target-compatible (preserve path) CAIS signature carrying modelText
-// as its channel field 6 model_text. It mirrors the wire layout the signature
-// package's defaultClaudeCAISParts/claudeCAISParts.encode fixture confirmed
-// against real claude-fable-5/claude-opus-5 captures (top-level field 1
-// envelope=2, field 2 container -> channel block field 1 channel_id=16, field
-// 3 channel version=2, field 5 a non-empty signature blob, field 6
-// model_text, top-level field 3 trailer=1), so InspectClaudeCAISSignature
-// classifies it as a genuine model-tagged signature and
-// DecideSignatureCompatibilityForModel takes the preserve branch rather than
-// the drop branch. modelText must start with "claude-"
-// (claudeCAISModelTextPrefix) to pass validation; everything after that
-// prefix is free-form, mirroring how a real model_text field carries an
-// attacker-observable value the sanitizer never authenticates.
-func modelTaggedClaudeCAISSignatureForExecutorTest(modelText string) string {
-	channelBlock := protowire.AppendTag(nil, 1, protowire.VarintType)
-	channelBlock = protowire.AppendVarint(channelBlock, 16)
-	channelBlock = protowire.AppendTag(channelBlock, 3, protowire.VarintType)
-	channelBlock = protowire.AppendVarint(channelBlock, 2)
-	channelBlock = protowire.AppendTag(channelBlock, 5, protowire.BytesType)
-	channelBlock = protowire.AppendBytes(channelBlock, make([]byte, 64))
-	channelBlock = protowire.AppendTag(channelBlock, 6, protowire.BytesType)
-	channelBlock = protowire.AppendBytes(channelBlock, []byte(modelText))
-
-	container := protowire.AppendTag(nil, 1, protowire.BytesType)
-	container = protowire.AppendBytes(container, channelBlock)
-
-	payload := protowire.AppendTag(nil, 1, protowire.VarintType)
-	payload = protowire.AppendVarint(payload, 2)
-	payload = protowire.AppendTag(payload, 2, protowire.BytesType)
-	payload = protowire.AppendBytes(payload, container)
-	payload = protowire.AppendTag(payload, 3, protowire.VarintType)
-	payload = protowire.AppendVarint(payload, 1)
-	return base64.StdEncoding.EncodeToString(payload)
 }
 
 func newClaudeHeaderTestRequest(t *testing.T, incoming http.Header) *http.Request {
@@ -138,7 +82,7 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 }
 
 func TestApplyClaudeHeaders_FastModeBetaIsConditional(t *testing.T) {
-	baseline := claudeCodeCLIBetas([]byte(`{"model":"claude-opus-5"}`), nil, false, false)
+	baseline := claudeCodeCLIBetas([]byte(`{"model":"claude-opus-5"}`), nil, false)
 	betasWithoutFastMode := baseline
 	betasWithFastMode := baseline + "," + claudeFastModeBeta
 
@@ -210,7 +154,7 @@ func assertClaudeCredentialIdentity(t *testing.T, body []byte, headers http.Head
 }
 
 // assertClaudeCountTokensIdentity pins the count_tokens shape captured from real
-// Claude Code 2.1.258: the endpoint carries no metadata whatsoever. Anthropic
+// Claude Code 2.1.220: the endpoint carries no metadata whatsoever. Anthropic
 // rejects the field there with "metadata: Extra inputs are not permitted", so the
 // credential identity travels only on the header and on the Messages endpoint.
 func assertClaudeCountTokensIdentity(t *testing.T, body []byte, headers http.Header) {
@@ -845,7 +789,7 @@ func TestApplyClaudeHeaders_EmptyAPIKey_OmitsAuthHeaders(t *testing.T) {
 	}
 }
 
-func TestClaudeExecutor_NonClaudeRequestUsesClaudeCode258CLIFingerprint(t *testing.T) {
+func TestClaudeExecutor_NonClaudeRequestUsesClaudeCode220CLIFingerprint(t *testing.T) {
 	var seenBody []byte
 	var seenHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -876,7 +820,7 @@ func TestClaudeExecutor_NonClaudeRequestUsesClaudeCode258CLIFingerprint(t *testi
 	if got := seenHeaders.Get("X-App"); got != "cli" {
 		t.Fatalf("X-App = %q, want cli", got)
 	}
-	if want := claudeCodeCLIBetas(payload, nil, false, false); seenHeaders.Get("Anthropic-Beta") != want {
+	if want := claudeCodeCLIBetas(payload, nil, false); seenHeaders.Get("Anthropic-Beta") != want {
 		t.Fatalf("Anthropic-Beta = %q, want %q", seenHeaders.Get("Anthropic-Beta"), want)
 	}
 
@@ -2084,6 +2028,75 @@ func TestClaudeExecutor_ExecuteStreamDirectPassthroughEmitsCompleteSSEEvents(t *
 	}
 }
 
+func TestClaudeExecutor_ExecuteStreamOpenAIResponseTranslatesCacheAndTrailingUsageChunk(t *testing.T) {
+	upstreamStream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"usage":{"input_tokens":2095,"cache_creation_input_tokens":7185,"cache_read_input_tokens":355598,"output_tokens":1}}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(upstreamStream))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-opus-5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAI,
+		ResponseFormat: sdktranslator.FormatOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var allChunks [][]byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		allChunks = append(allChunks, chunk.Payload)
+	}
+
+	var trailingUsageChunk []byte
+	for _, chunk := range allChunks {
+		choices := gjson.GetBytes(chunk, "choices")
+		if choices.Exists() && len(choices.Array()) == 0 && gjson.GetBytes(chunk, "usage").Exists() {
+			trailingUsageChunk = chunk
+			break
+		}
+	}
+
+	if trailingUsageChunk == nil {
+		t.Fatalf("expected trailing usage chunk with choices: [], got: %s", string(bytes.Join(allChunks, []byte("\n"))))
+	}
+
+	if gotCached := gjson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cached_tokens").Int(); gotCached != 355598 {
+		t.Errorf("cached_tokens = %d, want 355598", gotCached)
+	}
+	if gotWrite := gjson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cache_write_tokens").Int(); gotWrite != 7185 {
+		t.Errorf("cache_write_tokens = %d, want 7185", gotWrite)
+	}
+	if gotCreation := gjson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cached_creation_tokens").Int(); gotCreation != 7185 {
+		t.Errorf("cached_creation_tokens = %d, want 7185", gotCreation)
+	}
+	if gotOutput := gjson.GetBytes(trailingUsageChunk, "usage.completion_tokens").Int(); gotOutput != 15 {
+		t.Errorf("completion_tokens = %d, want 15", gotOutput)
+	}
+}
+
 // TestClaudeExecutor_ExecuteStreamDecodesCompressedSSE guards the dependency that
 // lets CPA advertise the real client's Accept-Encoding on streaming requests:
 // once compression is offered the upstream may compress the SSE body, so the
@@ -3250,262 +3263,6 @@ func TestClaudeExecutor_ExecuteSanitizesSignaturesBeforeUpstream(t *testing.T) {
 	}
 }
 
-func TestClaudeExecutor_ExecuteWarnsForUnknownCAISGenerationAtDefaultInfo(t *testing.T) {
-	logger := log.StandardLogger()
-	previousLevel := logger.GetLevel()
-	previousOutput := logger.Out
-	previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
-	logger.SetLevel(log.InfoLevel)
-	logger.SetOutput(io.Discard)
-	hook := logtest.NewLocal(logger)
-	t.Cleanup(func() {
-		hook.Reset()
-		logger.ReplaceHooks(previousHooks)
-		logger.SetOutput(previousOutput)
-		logger.SetLevel(previousLevel)
-	})
-
-	var seenBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		seenBody = bytes.Clone(body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-fable-5-1","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
-	}))
-	defer server.Close()
-
-	executor := NewClaudeExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"api_key":  "key-123",
-		"base_url": server.URL,
-	}}
-	run := func(t *testing.T, payload []byte) ([]*log.Entry, []byte) {
-		t.Helper()
-		hook.Reset()
-		seenBody = nil
-		if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-			Model:   "claude-fable-5-1",
-			Payload: payload,
-		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}); err != nil {
-			t.Fatalf("Execute() error = %v", err)
-		}
-		if len(seenBody) == 0 {
-			t.Fatal("expected executor to send an upstream request")
-		}
-		return hook.AllEntries(), bytes.Clone(seenBody)
-	}
-
-	const warningMessage = "claude executor: dropped signed history for unknown CAIS generation"
-	assertUnknownWarnings := func(t *testing.T, entries []*log.Entry, want map[string]int) {
-		t.Helper()
-		got := make(map[string]int)
-		for _, entry := range entries {
-			if entry.Message != warningMessage {
-				continue
-			}
-			if entry.Level != log.WarnLevel {
-				t.Fatalf("unknown-generation diagnosis level = %s, want warning", entry.Level)
-			}
-			reason := fmt.Sprint(entry.Data["reason"])
-			if _, duplicate := got[reason]; duplicate {
-				t.Fatalf("unknown-generation reason %q emitted more than once instead of being aggregated", reason)
-			}
-			count, ok := entry.Data["dropped_block_count"].(int)
-			if !ok {
-				t.Fatalf("warning for %q has dropped_block_count=%#v, want integer", reason, entry.Data["dropped_block_count"])
-			}
-			got[reason] = count
-		}
-		if len(got) != len(want) {
-			t.Fatalf("unknown-generation warning reasons = %v, want %v; entries=%v", got, want, entries)
-		}
-		for reason, count := range want {
-			if got[reason] != count {
-				t.Fatalf("warning count for %q = %d, want %d; all=%v", reason, got[reason], count, got)
-			}
-		}
-	}
-
-	const unknownEnvelopeReason = "invalid Claude model-free CAIS signature: unknown envelope version 5"
-	const unknownChannelReason = "invalid Claude model-free CAIS signature: unknown channel_id 18"
-	t.Run("sole unknown generation is visible at default info", func(t *testing.T) {
-		signature := modelFreeClaudeCAISSignatureForExecutorTest(5, 17)
-		payload := []byte(`{"model":"claude-fable-5-1","max_tokens":16,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"signed history","signature":"` + signature + `"},{"type":"text","text":"answer"}]},{"role":"user","content":[{"type":"text","text":"next"}]}]}`)
-		entries, body := run(t, payload)
-		if bytes.Contains(body, []byte(signature)) {
-			t.Fatal("unknown-generation thinking signature reached upstream")
-		}
-		assertUnknownWarnings(t, entries, map[string]int{unknownEnvelopeReason: 1})
-	})
-
-	t.Run("later unknown generations are aggregated at default info", func(t *testing.T) {
-		recognized := modelFreeClaudeCAISSignatureForExecutorTest(4, 17)
-		unknownEnvelope := modelFreeClaudeCAISSignatureForExecutorTest(5, 17)
-		unknownChannel := modelFreeClaudeCAISSignatureForExecutorTest(4, 18)
-		payload := []byte(`{"model":"claude-fable-5-1","max_tokens":16,"messages":[` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"recognized","signature":"` + recognized + `"},{"type":"text","text":"answer 0"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 0"}]},` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"unknown envelope one","signature":"` + unknownEnvelope + `"},{"type":"text","text":"answer 1"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 1"}]},` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"unknown envelope two","signature":"` + unknownEnvelope + `"},{"type":"text","text":"answer 2"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 2"}]},` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"unknown channel","signature":"` + unknownChannel + `"},{"type":"text","text":"answer 3"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 3"}]}]}`)
-		entries, body := run(t, payload)
-		if !bytes.Contains(body, []byte(recognized)) {
-			t.Fatal("recognized CAIS signature was not preserved ahead of later rejections")
-		}
-		if bytes.Contains(body, []byte(unknownEnvelope)) || bytes.Contains(body, []byte(unknownChannel)) {
-			t.Fatal("later unknown-generation thinking signature reached upstream")
-		}
-		assertUnknownWarnings(t, entries, map[string]int{
-			unknownEnvelopeReason: 2,
-			unknownChannelReason:  1,
-		})
-	})
-
-	t.Run("ordinary drop emits no warning", func(t *testing.T) {
-		const ordinarySignature = "gAAAAABopenai-encrypted-content"
-		payload := []byte(`{"model":"claude-fable-5-1","max_tokens":16,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"foreign history","signature":"` + ordinarySignature + `"},{"type":"text","text":"answer"}]},{"role":"user","content":[{"type":"text","text":"next"}]}]}`)
-		entries, body := run(t, payload)
-		if bytes.Contains(body, []byte(ordinarySignature)) {
-			t.Fatal("ordinary incompatible thinking signature reached upstream")
-		}
-		for _, entry := range entries {
-			if entry.Data["component"] == "signature_sanitizer" {
-				t.Fatalf("ordinary sanitize report escaped debug logging: level=%s message=%q fields=%v", entry.Level, entry.Message, entry.Data)
-			}
-		}
-	})
-
-	// A model-tagged CAIS signature's model_text is attacker-controlled past
-	// its required "claude-" prefix. claudeCompatibleSignatureReason copies
-	// model_text verbatim into a PRESERVED decision's reason, so an attacker
-	// can make that reason contain the unknown-generation marker's prose even
-	// though the block was never dropped. These two cases pin that such a
-	// preserved decision is never misclassified as a drop: paired with a real
-	// drop, it must not be counted as (or alongside) that drop's warning; and
-	// alone, it must not produce a warning at all.
-	const embeddedMarkerModelText = "claude-x invalid Claude model-free CAIS signature: unknown envelope version 9"
-	t.Run("preserved decision echoing marker text is not misclassified as a drop", func(t *testing.T) {
-		preservedSignature := modelTaggedClaudeCAISSignatureForExecutorTest(embeddedMarkerModelText)
-		droppedSignature := modelFreeClaudeCAISSignatureForExecutorTest(5, 17)
-		payload := []byte(`{"model":"claude-fable-5-1","max_tokens":16,"messages":[` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"preserved with embedded marker","signature":"` + preservedSignature + `"},{"type":"text","text":"answer 0"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 0"}]},` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"real drop","signature":"` + droppedSignature + `"},{"type":"text","text":"answer 1"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 1"}]}]}`)
-		entries, body := run(t, payload)
-		if !bytes.Contains(body, []byte(preservedSignature)) {
-			t.Fatal("preserved CAIS signature with embedded marker text was not sent upstream")
-		}
-		if bytes.Contains(body, []byte(droppedSignature)) {
-			t.Fatal("unknown-generation thinking signature reached upstream")
-		}
-		assertUnknownWarnings(t, entries, map[string]int{unknownEnvelopeReason: 1})
-	})
-
-	t.Run("marker text only in a preserved decision emits no warning", func(t *testing.T) {
-		// Pair the preserved marker-bearing signature with an ordinary foreign
-		// drop (unrelated reason text) rather than sending it alone: alone,
-		// report.DroppedBlocks/DroppedSignatures/ReplacedSignatures would all
-		// be zero and logClaudeSignatureSanitizeReport would return before
-		// ever reaching the decisions loop, passing regardless of whether the
-		// classifier is anchored. The ordinary drop reaches that loop without
-		// itself being an unknown-generation reason.
-		const ordinarySignature = "gAAAAABopenai-encrypted-content"
-		preservedSignature := modelTaggedClaudeCAISSignatureForExecutorTest(embeddedMarkerModelText)
-		payload := []byte(`{"model":"claude-fable-5-1","max_tokens":16,"messages":[` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"preserved with embedded marker","signature":"` + preservedSignature + `"},{"type":"text","text":"answer 0"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 0"}]},` +
-			`{"role":"assistant","content":[{"type":"thinking","thinking":"ordinary foreign drop","signature":"` + ordinarySignature + `"},{"type":"text","text":"answer 1"}]},` +
-			`{"role":"user","content":[{"type":"text","text":"next 1"}]}]}`)
-		entries, body := run(t, payload)
-		if !bytes.Contains(body, []byte(preservedSignature)) {
-			t.Fatal("preserved CAIS signature with embedded marker text was not sent upstream")
-		}
-		if bytes.Contains(body, []byte(ordinarySignature)) {
-			t.Fatal("ordinary incompatible thinking signature reached upstream")
-		}
-		assertUnknownWarnings(t, entries, map[string]int{})
-	})
-}
-
-// TestLogClaudeSignatureSanitizeReport_FiltersNonDropDecisionsBeforeClassifying
-// isolates logClaudeSignatureSanitizeReport's own Action == SignatureActionDropBlock
-// filter, independent of sigcompat.ClassifyUnknownCAISGeneration's anchoring
-// (which TestClaudeExecutor_ExecuteWarnsForUnknownCAISGenerationAtDefaultInfo's
-// "preserved decision echoing marker text" subtest already covers via the real
-// sanitizer). The real sanitizer never produces a preserve decision whose
-// Reason equals the unknown-generation marker verbatim — claudeCompatibleSignatureReason
-// always prepends its own fixed "valid Claude..." lead-in text first, which
-// the classifier's anchoring alone is enough to reject — so this builds the
-// report directly to construct the one case that isolates the filter: a
-// preserve decision whose Reason, if classified, WOULD pass the anchored
-// classifier. Without the filter this still logs a second, spurious warning;
-// with it, only the genuine drop is reported.
-func TestLogClaudeSignatureSanitizeReport_FiltersNonDropDecisionsBeforeClassifying(t *testing.T) {
-	logger := log.StandardLogger()
-	previousLevel := logger.GetLevel()
-	previousOutput := logger.Out
-	previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
-	logger.SetLevel(log.InfoLevel)
-	logger.SetOutput(io.Discard)
-	hook := logtest.NewLocal(logger)
-	t.Cleanup(func() {
-		hook.Reset()
-		logger.ReplaceHooks(previousHooks)
-		logger.SetOutput(previousOutput)
-		logger.SetLevel(previousLevel)
-	})
-
-	const realDropReason = "invalid Claude model-free CAIS signature: unknown envelope version 5"
-	const notADropReason = "invalid Claude model-free CAIS signature: unknown channel_id 18"
-
-	report := sigcompat.SignatureSanitizeReport{
-		TargetProvider: sigcompat.SignatureProviderClaude,
-		Preserved:      1,
-		DroppedBlocks:  1,
-		Decisions: []sigcompat.SignatureCompatibilityDecision{
-			{
-				Action:    sigcompat.SignatureActionDropBlock,
-				Reason:    "messages[0].content[0]: " + realDropReason,
-				BlockKind: sigcompat.SignatureBlockKindClaudeThinking,
-			},
-			{
-				// Constructed directly, not via the real sanitizer: a
-				// preserve decision whose Reason is exactly a position
-				// prefix plus the unknown-generation marker, with nothing
-				// else around it, so ClassifyUnknownCAISGeneration alone
-				// would say ok=true for it. Only the Action filter can
-				// catch this one.
-				Action:    sigcompat.SignatureActionPreserve,
-				Reason:    "messages[1].content[0]: " + notADropReason,
-				BlockKind: sigcompat.SignatureBlockKindClaudeThinking,
-			},
-		},
-	}
-
-	logClaudeSignatureSanitizeReport(context.Background(), "claude-fable-5-1", report)
-
-	const warningMessage = "claude executor: dropped signed history for unknown CAIS generation"
-	var warnings []*log.Entry
-	for _, entry := range hook.AllEntries() {
-		if entry.Message == warningMessage {
-			warnings = append(warnings, entry)
-		}
-	}
-	if len(warnings) != 1 {
-		t.Fatalf("unknown-generation warning count = %d, want 1; entries=%v", len(warnings), warnings)
-	}
-	if got := fmt.Sprint(warnings[0].Data["reason"]); got != realDropReason {
-		t.Fatalf("warning reason = %q, want %q (the preserved decision must not be classified)", got, realDropReason)
-	}
-	if got := fmt.Sprint(warnings[0].Data["signature_action"]); got != string(sigcompat.SignatureActionDropBlock) {
-		t.Fatalf("warning signature_action = %q, want %q", got, sigcompat.SignatureActionDropBlock)
-	}
-}
-
 func TestClaudeExecutor_Execute_InvalidGzipErrorBodyReturnsDecodeMessage(t *testing.T) {
 	testClaudeExecutorInvalidCompressedErrorBody(t, func(executor *ClaudeExecutor, auth *cliproxyauth.Auth, payload []byte) error {
 		_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
@@ -4134,19 +3891,14 @@ func assertEphemeralUserTextBlock(t *testing.T, block gjson.Result, wantText, wa
 	}
 }
 
-func TestClaudeBillingFingerprintUsesLatestUserText(t *testing.T) {
+func TestClaudeBillingFingerprintUsesFirstUserText(t *testing.T) {
 	const prompt = "CPA_OFFICIAL_BASEURL_CLI_SYSTEM_EMPTY_b82d4e"
-	payload := []byte(`{"system":"must not seed the build hash","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"answer"},{"role":"user","content":[{"type":"text","text":"<system-reminder>date</system-reminder>"},{"type":"text","text":"` + prompt + `"}]}]}`)
+	payload := []byte(`{"system":"must not seed the build hash","messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>date</system-reminder>"},{"type":"text","text":"` + prompt + `"}]},{"role":"assistant","content":"answer"},{"role":"user","content":"turn2"}]}`)
 	if got := claudeBillingFingerprintMessageText(payload); got != prompt {
 		t.Fatalf("claudeBillingFingerprintMessageText() = %q, want %q", got, prompt)
 	}
 	if got := computeFingerprint(prompt, "2.1.258"); got != "1f4" {
 		t.Fatalf("computeFingerprint() = %q, want official 2.1.258 capture suffix 1f4", got)
-	}
-	// Captured 2026-09-02 from Claude Code 2.1.258 (cli entrypoint): the prompt
-	// "Reply with OK" produced cc_version=2.1.258.c6a.
-	if got := computeFingerprint("Reply with OK", "2.1.258"); got != "c6a" {
-		t.Fatalf("computeFingerprint() = %q, want official 2.1.258 capture suffix c6a", got)
 	}
 }
 
@@ -5320,7 +5072,7 @@ func TestApplyCloaking_FableInjectsFallbacksAndDisplayUpdates(t *testing.T) {
 		t.Fatalf("expected thinking.display=updates, got: %q", display)
 	}
 
-	betas := claudeCodeCLIBetas(out, nil, true, false)
+	betas := claudeCodeCLIBetas(out, nil, true)
 	if !strings.Contains(betas, "server-side-fallback-2026-06-01") {
 		t.Fatalf("expected server-side-fallback beta in betas, got: %s", betas)
 	}
@@ -7865,7 +7617,7 @@ func TestClaudeExecutor_ExecuteOAuthCustomToolMCPAliasRoundTrip(t *testing.T) {
 	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.258 (external, cli)" {
 		t.Fatalf("Messages User-Agent = %q, want CLI identity", got)
 	}
-	wantBetas := claudeCodeCLIBetas(payload, nil, true, false)
+	wantBetas := claudeCodeCLIBetas(payload, nil, true)
 	if got := upstreamHeaders.Get("Anthropic-Beta"); got != wantBetas {
 		t.Fatalf("Messages Anthropic-Beta = %q, want %q", got, wantBetas)
 	}
@@ -7942,7 +7694,7 @@ func TestClaudeExecutor_ExecuteStreamOAuthCustomToolMCPAliasRoundTrip(t *testing
 	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.258 (external, cli)" {
 		t.Fatalf("streaming User-Agent = %q, want CLI identity", got)
 	}
-	wantBetas := claudeCodeCLIBetas(payload, nil, true, false)
+	wantBetas := claudeCodeCLIBetas(payload, nil, true)
 	if got := upstreamHeaders.Get("Anthropic-Beta"); got != wantBetas {
 		t.Fatalf("streaming Anthropic-Beta = %q, want %q", got, wantBetas)
 	}
@@ -8075,10 +7827,8 @@ func TestInsertClaudeMidConversationSystemMessages_IsIdempotent(t *testing.T) {
 }
 
 // TestClaudeCodeCLIBetas_MatchesObservedClientMatrix pins the Anthropic-Beta
-// baseline to Claude Code 2.1.258 behavior. The 2.1.220 OAuth profile was
-// reverified on 2026-08-03 with two distinct accounts; the 2.1.258 profile was
-// captured on 2026-09-02 from the installed CLI on the cli and sdk-cli
-// entrypoints with an OAuth credential.
+// baseline to Claude Code 2.1.220 behavior captured against api.anthropic.com.
+// The OAuth profile was reverified on 2026-08-03 with two distinct accounts.
 func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 	const constants = "claude-code-20250219,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
 
@@ -8146,11 +7896,6 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			want: constants + ",mid-conversation-system-2026-04-07,effort-2025-11-24",
 		},
 		{
-			name: "claude-fable-5-1 accepts role=system",
-			body: `{"model":"claude-fable-5-1"}`,
-			want: constants + ",mid-conversation-system-2026-04-07,effort-2025-11-24",
-		},
-		{
 			name: "claude-opus-4-7 stays on the reminder path",
 			body: `{"model":"claude-opus-4-7"}`,
 			want: constants + ",effort-2025-11-24",
@@ -8165,24 +7910,6 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 				"prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20," +
 				"effort-2025-11-24,fallback-credit-2026-06-01," +
 				"extended-cache-ttl-2025-04-11",
-		},
-		{
-			// Captured 2026-09-02 from Claude Code 2.1.258 (cli entrypoint, OAuth,
-			// auto mode on): 158 inline tools without tool search, advisor beta
-			// enabled for the account, thinking adaptive without display.
-			name:  "2.1.258 main thread capture with inline tools and afk-mode",
-			body:  `{"model":"claude-fable-5-1","tools":[{"name":"Read"}],"thinking":{"type":"adaptive"}}`,
-			oauth: true,
-			requested: map[string]bool{
-				claudeAdvisorToolBeta: true,
-				claudeAFKModeBeta:     true,
-			},
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07," +
-				"advisor-tool-2026-03-01,effort-2025-11-24,fallback-credit-2026-06-01," +
-				"afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
 		},
 		{
 			name:  "oauth precedes context-1m",
@@ -8299,6 +8026,24 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 			want: constants + ",mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24",
 		},
 		{
+			// Captured 2026-09-02 from Claude Code 2.1.258 (cli entrypoint, OAuth,
+			// auto mode on): 158 inline tools without tool search, advisor beta
+			// enabled for the account, thinking adaptive without display.
+			name:  "2.1.258 main thread capture with inline tools and afk-mode",
+			body:  `{"model":"claude-fable-5-1","tools":[{"name":"Read"}],"thinking":{"type":"adaptive"}}`,
+			oauth: true,
+			requested: map[string]bool{
+				claudeAdvisorToolBeta: true,
+				claudeAFKModeBeta:     true,
+			},
+			want: "claude-code-20250219,oauth-2025-04-20," +
+				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
+				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
+				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07," +
+				"advisor-tool-2026-03-01,effort-2025-11-24,fallback-credit-2026-06-01," +
+				"afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+		},
+		{
 			name:      "afk-mode sits between fast-mode and extended-cache-ttl",
 			body:      `{"model":"claude-opus-5","speed":"fast"}`,
 			oauth:     true,
@@ -8379,56 +8124,17 @@ func TestClaudeCodeCLIBetas_MatchesObservedClientMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := claudeCodeCLIBetas([]byte(tt.body), tt.requested, tt.oauth, false); got != tt.want {
+			if got := claudeCodeCLIBetas([]byte(tt.body), tt.requested, tt.oauth); got != tt.want {
 				t.Fatalf("claudeCodeCLIBetas() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-// TestClaudeCodeCLIBetas_LegacyBaselineKeeps220Policy pins the beta policy an
-// operator gets after pinning claude-header-defaults to 2.1.220: advanced-tool-use
-// with any non-empty tool list, and no afk-mode.
-func TestClaudeCodeCLIBetas_LegacyBaselineKeeps220Policy(t *testing.T) {
-	const constants = "claude-code-20250219,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
-	tests := []struct {
-		name      string
-		body      string
-		requested map[string]bool
-		oauth     bool
-		want      string
-	}{
-		{
-			name: "inline tools add advanced tool use",
-			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"Read"}]}`,
-			want: constants + ",advanced-tool-use-2025-11-20,effort-2025-11-24",
-		},
-		{
-			name: "empty tools stay without it",
-			body: `{"model":"claude-sonnet-4-6","tools":[]}`,
-			want: constants + ",effort-2025-11-24",
-		},
-		{
-			name:      "afk-mode is dropped even when requested",
-			body:      `{"model":"claude-opus-5","speed":"fast"}`,
-			oauth:     true,
-			requested: map[string]bool{claudeAFKModeBeta: true},
-			want: "claude-code-20250219,oauth-2025-04-20," +
-				"interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
-				"thinking-token-count-2026-05-13,context-management-2025-06-27," +
-				"prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07," +
-				"effort-2025-11-24,fallback-credit-2026-06-01,fast-mode-2026-02-01," +
-				"extended-cache-ttl-2025-04-11",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := claudeCodeCLIBetas([]byte(tt.body), tt.requested, tt.oauth, true); got != tt.want {
-				t.Fatalf("claudeCodeCLIBetas() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
+// TestApplyClaudeHeaders_StreamTransportNegotiation pins the observed 2.1.220
+// behaviour: a streaming request to api.anthropic.com negotiates exactly like a
+// non-streaming one, because Anthropic selects SSE from the body. Other
+// Anthropic-compatible upstreams keep the conservative SSE contract.
 
 // TestWithClaudeAdvisorToolBeta_InsertsBeforeTrailingBetas pins the advisor
 // insertion point against every beta that follows it on the 2.1.258 wire,
@@ -8470,10 +8176,6 @@ func TestWithClaudeAdvisorToolBeta_InsertsBeforeTrailingBetas(t *testing.T) {
 	}
 }
 
-// TestApplyClaudeHeaders_StreamTransportNegotiation pins the observed 2.1.220
-// behaviour: a streaming request to api.anthropic.com negotiates exactly like a
-// non-streaming one, because Anthropic selects SSE from the body. Other
-// Anthropic-compatible upstreams keep the conservative SSE contract.
 func TestApplyClaudeHeaders_StreamTransportNegotiation(t *testing.T) {
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-stream-accept"}}
 	body := []byte(`{"model":"claude-opus-4-6","stream":true}`)
@@ -9430,7 +9132,7 @@ func TestClaudeExecutor_ProbeStripsCaller1hTTLAndBetas(t *testing.T) {
 	}
 }
 
-func TestClaudeExecutor_SubagentStripsCaller1hTTLAndExtendedCacheBeta(t *testing.T) {
+func TestClaudeExecutor_SubagentPreservesCaller1hTTLAndExtendedCacheBeta(t *testing.T) {
 	var seenHeaders http.Header
 	var seenBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -9480,16 +9182,16 @@ func TestClaudeExecutor_SubagentStripsCaller1hTTLAndExtendedCacheBeta(t *testing
 		t.Fatalf("Execute error = %v", err)
 	}
 
-	// 1. Verify body cache_control does not have ttl: "1h"
+	// 1. Verify body cache_control preserves ttl: "1h"
 	rawBody := string(seenBody)
-	if strings.Contains(rawBody, `"ttl":"1h"`) || strings.Contains(rawBody, `"ttl": "1h"`) {
-		t.Fatalf("subagent body must have ttl stripped, got: %s", rawBody)
+	if !strings.Contains(rawBody, `"ttl":"1h"`) && !strings.Contains(rawBody, `"ttl": "1h"`) {
+		t.Fatalf("subagent body must preserve ttl: 1h when requested, got: %s", rawBody)
 	}
 
-	// 2. Verify extended-cache-ttl beta is stripped from header
+	// 2. Verify extended-cache-ttl beta is preserved in header
 	betas := seenHeaders.Get("Anthropic-Beta")
-	if strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
-		t.Errorf("subagent Anthropic-Beta must not contain extended-cache-ttl, got: %s", betas)
+	if !strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
+		t.Errorf("subagent Anthropic-Beta must preserve extended-cache-ttl when requested, got: %s", betas)
 	}
 }
 

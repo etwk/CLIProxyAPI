@@ -53,9 +53,9 @@ const (
 	claudeAFKModeBeta                = "afk-mode-2026-01-31"
 )
 
-// claudeCodeCLIConstantBetas are the betas Claude Code 2.1.258 sends on every
+// claudeCodeCLIConstantBetas are the betas Claude Code sends on every
 // /v1/messages request from the "cli" entrypoint, in wire order, excluding the
-// leading claude-code-20250219. The set and order are unchanged since 2.1.220.
+// leading claude-code-20250219.
 //
 // redact-thinking-2026-02-12 belongs here because cloaked requests always claim
 // cc_entrypoint=cli; the "sdk-cli" entrypoint omits it. It is still dropped for
@@ -77,18 +77,50 @@ var claudeCodeTrailingBetas = []string{
 	claudeStructuredOutputsBeta,
 }
 
+// claudeManagedBetaSet holds every beta the proxy itself assembles or gates.
+// Caller betas outside this set are unknown to the pinned Claude Code profile —
+// newer client releases ship betas past it — and are forwarded verbatim so
+// their features keep working (#5738).
+var claudeManagedBetaSet = func() map[string]bool {
+	managed := []string{
+		claudeTokenCountingBeta,
+		claudeFastModeBeta,
+		claudeOAuthBeta,
+		claudeCodeBeta,
+		claudeContext1MBeta,
+		claudeMidConvSystemBeta,
+		claudeAdvisorToolBeta,
+		claudeAdvancedToolUseBeta,
+		claudeEffortBeta,
+		claudeServerSideFallbackBeta,
+		claudeFallbackCreditBeta,
+		claudeStructuredOutputsBeta,
+		claudeThinkingDisplayUpdatesBeta,
+		claudeExtendedCacheTTLBeta,
+		claudeCacheDiagnosisBeta,
+		claudeRedactThinkingBeta,
+		claudeAFKModeBeta,
+	}
+	managed = append(managed, claudeCodeCLIConstantBetas...)
+	managed = append(managed, claudeCodeTrailingBetas...)
+	set := make(map[string]bool, len(managed))
+	for _, beta := range managed {
+		set[beta] = true
+	}
+	return set
+}()
+
+func isManagedClaudeBeta(beta string) bool {
+	return claudeManagedBetaSet[strings.TrimSpace(beta)]
+}
+
 // claudeCodeCLIBetas assembles the Anthropic-Beta baseline the way Claude Code
 // 2.1.258 does: the list is per-request, not a fixed string. requested holds the
 // betas the caller asked for, which decide the capability flags below.
 //
-// The 2.1.220 baseline was verified against api.anthropic.com with isolated
-// profiles on both API-key and OAuth paths, and a 2026-08-03 A/B capture with
-// two distinct OAuth accounts confirmed the tool beta and OAuth trailer. The
-// 2.1.258 baseline was measured on 2026-09-02 from the installed CLI on both the
-// cli and sdk-cli entrypoints with an OAuth credential: the header set is the
-// same except that advanced-tool-use is emitted only while tool search is
-// active, and afk-mode-2026-01-31 was added between fast-mode and
-// extended-cache-ttl. The full observed order is:
+// Verified against api.anthropic.com with native 2.1.258 captures on interactive,
+// non-interactive, subagent, and multi-model paths (Sonnet, Opus, Fable, Haiku).
+// The full observed order is:
 //
 //	 1 claude-code-20250219
 //	 2 oauth-2025-04-20                  OAuth credentials only
@@ -100,26 +132,21 @@ var claudeCodeTrailingBetas = []string{
 //	 8 prompt-caching-scope-2026-01-05
 //	 9 mid-conversation-system-2026-04-07  models accepting a role=system turn
 //	10 advisor-tool-2026-03-01             requests declaring advisor tools or requesting advisor beta
-//	11 advanced-tool-use-2025-11-20       requests using advanced tool-use features (all tools on legacy baseline)
+//	11 advanced-tool-use-2025-11-20       requests using tool search or another advanced tool-use feature
 //	12 effort-2025-11-24                  effort-supporting models with active thinking
 //	13 server-side-fallback-2026-06-01    requests with fallbacks or requested
 //	14 fallback-credit-2026-06-01         OAuth credentials
 //	15 structured-outputs-2025-12-15      structured output requests
 //	16 thinking-display-updates-2026-08-18 requests with thinking.display=updates
 //	17 fast-mode-2026-02-01               speed:fast requests only
-//	18 afk-mode-2026-01-31                forwarded on current baseline when requested
+//	18 afk-mode-2026-01-31                auto-mode sessions, forwarded when the caller sends it
 //	19 extended-cache-ttl-2025-04-11      OAuth credentials (omitted on subagent & probe)
 //	20 cache-diagnosis-2026-04-07         requests with diagnostics only
 //
 // An empty body keeps the optimistic role=system default, matching the cloaking
 // policy for unknown and future model IDs.
-//
-// legacyWire selects the measured 2.1.220 policy for an operator whose
-// claude-header-defaults pin a baseline older than 2.1.258: advanced-tool-use
-// accompanies every non-empty tool list and afk-mode is never sent, so the beta
-// set stays one that release really emitted.
-func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool, legacyWire bool) string {
-	betas := make([]string, 0, len(claudeCodeCLIConstantBetas)+len(claudeCodeTrailingBetas)+7)
+func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool) string {
+	betas := make([]string, 0, len(claudeCodeCLIConstantBetas)+len(claudeCodeTrailingBetas)+9)
 	betas = append(betas, claudeCodeBeta)
 	if oauthToken {
 		betas = append(betas, claudeOAuthBeta)
@@ -140,12 +167,7 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool,
 	if requested[claudeAdvisorToolBeta] || claudeBodyHasAdvisorTool(body) {
 		betas = append(betas, claudeAdvisorToolBeta)
 	}
-	advancedToolUse := requested[claudeAdvancedToolUseBeta] || claudeBodyUsesAdvancedToolUse(body)
-	if legacyWire {
-		tools := gjson.GetBytes(body, "tools")
-		advancedToolUse = tools.IsArray() && len(tools.Array()) > 0
-	}
-	if advancedToolUse {
+	if requested[claudeAdvancedToolUseBeta] || claudeBodyUsesAdvancedToolUse(body) {
 		betas = append(betas, claudeAdvancedToolUseBeta)
 	}
 	if claudeRequestSupportsEffort(body, requested) {
@@ -173,41 +195,21 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool,
 	if claudeRequestUsesFastMode(body, requested) {
 		betas = append(betas, claudeFastModeBeta)
 	}
-	if !legacyWire && requested[claudeAFKModeBeta] {
+	if requested[claudeAFKModeBeta] {
 		betas = append(betas, claudeAFKModeBeta)
 	}
-	if oauthToken && !helps.IsClaudeSubagentRequest(nil, body) && !isProbeOrHelper {
-		betas = append(betas, claudeExtendedCacheTTLBeta)
+	if !isProbeOrHelper {
+		includeExtended := (oauthToken && !helps.IsClaudeSubagentRequest(nil, body)) ||
+			requested[claudeExtendedCacheTTLBeta] ||
+			helps.ClaudePayloadHas1hTTL(body)
+		if includeExtended {
+			betas = append(betas, claudeExtendedCacheTTLBeta)
+		}
 	}
 	if diagnostics := gjson.GetBytes(body, "diagnostics"); diagnostics.IsObject() {
 		betas = append(betas, claudeCacheDiagnosisBeta)
 	}
 	return strings.Join(betas, ",")
-}
-
-// claudeBodyUsesAdvancedToolUse reports whether the request needs
-// advanced-tool-use-2025-11-20. Claude Code 2.1.258 adds the beta only while
-// tool search is active, which puts a tool_search_tool_* server tool and
-// defer_loading tools on the wire; plain tool declarations no longer carry it
-// (measured 2026-09-02: 158 inline tools, no beta). Tool use examples
-// (input_examples) and programmatic tool calling (allowed_callers) sit behind
-// the same beta and are just as visible in the body, so callers using them keep
-// working without requesting the beta explicitly.
-func claudeBodyUsesAdvancedToolUse(body []byte) bool {
-	tools := gjson.GetBytes(body, "tools")
-	if !tools.IsArray() {
-		return false
-	}
-	for _, tool := range tools.Array() {
-		toolType := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
-		if strings.HasPrefix(toolType, "tool_search_tool_") {
-			return true
-		}
-		if tool.Get("defer_loading").Bool() || tool.Get("input_examples").Exists() || tool.Get("allowed_callers").Exists() {
-			return true
-		}
-	}
-	return false
 }
 
 func isClaudeHaikuModel(model string) bool {
@@ -237,6 +239,31 @@ func claudeRequestSupportsEffort(body []byte, requested map[string]bool) bool {
 func claudeThinkingDisplayUpdates(body []byte) bool {
 	display := gjson.GetBytes(body, "thinking.display")
 	return display.Type == gjson.String && strings.EqualFold(strings.TrimSpace(display.String()), "updates")
+}
+
+// claudeBodyUsesAdvancedToolUse reports whether the request needs
+// advanced-tool-use-2025-11-20. Claude Code 2.1.258 adds the beta only while
+// tool search is active, which puts a tool_search_tool_* server tool and
+// defer_loading tools on the wire; plain tool declarations no longer carry it
+// (measured 2026-09-02: 158 inline tools, no beta). Tool use examples
+// (input_examples) and programmatic tool calling (allowed_callers) sit behind
+// the same beta and are just as visible in the body, so callers using them keep
+// working without requesting the beta explicitly.
+func claudeBodyUsesAdvancedToolUse(body []byte) bool {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return false
+	}
+	for _, tool := range tools.Array() {
+		toolType := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
+		if strings.HasPrefix(toolType, "tool_search_tool_") {
+			return true
+		}
+		if tool.Get("defer_loading").Bool() || tool.Get("input_examples").Exists() || tool.Get("allowed_callers").Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 // claudeBodyHasAdvisorTool reports whether the request body declares an
@@ -288,9 +315,6 @@ func claudeRequestUsesFastMode(body []byte, requested map[string]bool) bool {
 // /v1/messages/count_tokens. It is far smaller than the inference baseline:
 // redact-thinking, thinking-token-count, prompt-caching-scope, effort and every
 // conditional beta are absent. Verified identical across 37 captured calls.
-// Re-measured on 2.1.258 (2026-09-02, large-file Read pre-check): the same five
-// betas in the same order, a body of model, messages and tools only, and no
-// X-Stainless-Timeout.
 var claudeCountTokensBetas = []string{
 	claudeCodeBeta,
 	"interleaved-thinking-2025-05-14",
@@ -377,6 +401,21 @@ func withoutClaudeBeta(betas, removeBeta string) string {
 		}
 	}
 	return strings.Join(res, ",")
+}
+
+func withClaudeExtendedCacheTTLBeta(betas string) string {
+	parts := make([]string, 0, 16)
+	seen := make(map[string]bool)
+	for _, beta := range strings.Split(betas, ",") {
+		if beta = strings.TrimSpace(beta); beta != "" && !seen[beta] {
+			parts = append(parts, beta)
+			seen[beta] = true
+		}
+	}
+	if !seen[claudeExtendedCacheTTLBeta] {
+		parts = append(parts, claudeExtendedCacheTTLBeta)
+	}
+	return strings.Join(parts, ",")
 }
 
 // withClaudeAdvisorToolBeta ensures advisor-tool-2026-03-01 is present when
@@ -895,11 +934,10 @@ func applyClaudeHeadersWithNativeProfile(
 	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
 	requestedMap := claudeRequestedBetas(incomingBetas, extraBetas)
 	advisorNeeded := requestedMap[claudeAdvisorToolBeta] || claudeBodyHasAdvisorTool(body)
-	legacyWire := helps.ClaudeBaselineUsesLegacyWire(cfg)
 
 	baseBetas := incomingBetas
 	if !preserveCallerFingerprint {
-		baseBetas = claudeCodeCLIBetas(body, requestedMap, useOAuthBetas, legacyWire)
+		baseBetas = claudeCodeCLIBetas(body, requestedMap, useOAuthBetas)
 		if countTokens {
 			baseBetas = claudeCountTokensBetasForCredential(useOAuthBetas)
 			if advisorNeeded {
@@ -921,7 +959,8 @@ func applyClaudeHeadersWithNativeProfile(
 			} else {
 				isSubagent := helps.IsClaudeSubagentRequest(incomingHeaders, body)
 				isProbe := helps.IsClaudeProbeOrHelperRequest(body)
-				includeExtendedCacheTTL := !isSubagent && !isProbe
+				subagent1h := isSubagent && helps.ClaudeSubagentRequests1h(incomingHeaders, body)
+				includeExtendedCacheTTL := (!isSubagent || subagent1h) && !isProbe
 				baseBetas = withClaudeOAuthCredentialBetas(baseBetas, includeExtendedCacheTTL)
 			}
 		}
@@ -960,11 +999,22 @@ func applyClaudeHeadersWithNativeProfile(
 			appendBeta(beta)
 		}
 	} else {
-		// On direct Anthropic an unconfirmed CLI-profile caller's own betas are
-		// dropped: appending them to the measured baseline produces a shape real
-		// Claude Code never sends. Custom gateways keep caller extensions.
-		if !confirmedClaudeCode && incomingBetas != "" && !isAnthropicBase {
+		// On direct Anthropic an unconfirmed CLI-profile caller's managed betas
+		// are dropped: appending them to the measured baseline produces a shape
+		// real Claude Code never sends. Caller betas the proxy does not manage
+		// are newer-client features the pinned profile predates; dropping them
+		// fails those requests outright (per-turn effort directives need
+		// per-turn-control-2026-07-01), so they are forwarded (#5738). Custom
+		// gateways keep all caller extensions.
+		if !confirmedClaudeCode && incomingBetas != "" {
 			for _, beta := range strings.Split(incomingBetas, ",") {
+				beta = strings.TrimSpace(beta)
+				if beta == "" {
+					continue
+				}
+				if isManagedClaudeBeta(beta) && isAnthropicBase {
+					continue
+				}
 				appendBeta(beta)
 			}
 		}
@@ -989,8 +1039,11 @@ func applyClaudeHeadersWithNativeProfile(
 		if reqThinkingType == "disabled" {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeThinkingDisplayUpdatesBeta)
 		}
-		if helps.IsClaudeSubagentRequest(nil, body) {
+		if helps.IsClaudeSubagentRequest(incomingHeaders, body) && !helps.ClaudeSubagentRequests1h(incomingHeaders, body) {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeExtendedCacheTTLBeta)
+		}
+		if !reqProbeOrHelper && !countTokens && helps.ClaudePayloadHas1hTTL(body) {
+			baseBetas = withClaudeExtendedCacheTTLBeta(baseBetas)
 		}
 		reqModel := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
 		if isClaudeHaikuModel(reqModel) && !gjson.GetBytes(body, "fallbacks").Exists() {
@@ -1115,26 +1168,24 @@ func applyClaudeHeadersWithNativeProfile(
 		}
 	}
 	// Per-request UUID, matches Claude Code's x-client-request-id for first-party API.
-	// Claude Code 2.1.258 attaches it only when its own base URL is api.anthropic.com,
-	// so a request that reached CPA never carries one and this fresh UUID restores the
-	// first-party shape; identityHeader still prefers an incoming value for a confirmed
-	// client. Helpers opt in on custom gateways too.
-	if isAnthropicBase || helperProfile {
+	// identityHeader prefers the incoming value for a confirmed client, so a confirmed
+	// helper keeps its own native request ID and this fresh UUID only covers a caller
+	// that sent none. Helpers opt in on custom gateways too, but only to carry the
+	// request ID they already sent: 2.1.258 attaches the header just for a first-party
+	// base URL, so a helper that arrived without one keeps it absent upstream rather
+	// than gaining a synthesized ID the real client would not have sent.
+	if isAnthropicBase || (helperProfile && helps.HeaderValueCaseInsensitive(incomingHeaders, "x-client-request-id") != "") {
 		identityHeader("x-client-request-id", uuid.New().String())
 	}
 	r.Header.Set("Connection", "keep-alive")
 	// Regular Claude Code requests negotiate transport identically for streaming
 	// and non-streaming requests. Claude Code 2.1.258 Haiku helpers offer the same
-	// full compression set as the main thread; 2.1.220's minimal probe offered gzip
-	// only. Confirmed helpers preserve the incoming native values.
+	// full compression set as the main thread (2.1.220's minimal probe offered gzip
+	// only). Confirmed helpers preserve the incoming native values.
 	applyTransportNegotiation := func() {
 		if helperProfile {
 			identityHeader("Accept", "application/json")
-			helperEncoding := "gzip, deflate, br, zstd"
-			if legacyWire {
-				helperEncoding = "gzip"
-			}
-			identityHeader("Accept-Encoding", helperEncoding)
+			identityHeader("Accept-Encoding", "gzip, deflate, br, zstd")
 			return
 		}
 		if stream && !isAnthropicBase {

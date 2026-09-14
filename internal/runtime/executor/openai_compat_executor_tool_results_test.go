@@ -24,6 +24,7 @@ func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
 		{name: "non-stream text-only", stream: false, inputModalities: []string{"text"}, wantString: true},
 		{name: "stream text-only", stream: true, inputModalities: []string{"text"}, wantString: true},
 		{name: "non-stream multimodal", stream: false, inputModalities: []string{"text", "image"}, wantString: false},
+		{name: "stream multimodal", stream: true, inputModalities: []string{"text", "image"}, wantString: false},
 		{name: "non-stream unspecified", stream: false, inputModalities: nil, wantString: false},
 	}
 
@@ -92,8 +93,16 @@ func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
 				if toolContent.String() != want {
 					t.Fatalf("tool content = %q, want %q", toolContent.String(), want)
 				}
-			} else if !toolContent.IsArray() {
-				t.Fatalf("tool content type = %s, want array; body=%s", toolContent.Type, string(gotBody))
+				if gjson.GetBytes(gotBody, "messages.#").Int() != 2 {
+					t.Fatalf("text-only model received a relayed image message: %s", gotBody)
+				}
+			} else {
+				if toolContent.Type != gjson.String || toolContent.String() != "image inspected" {
+					t.Fatalf("tool content = %s, want text with images relayed separately", toolContent.Raw)
+				}
+				if gjson.GetBytes(gotBody, "messages.2.role").String() != "user" || gjson.GetBytes(gotBody, "messages.2.content.1.image_url.url").String() != "data:image/png;base64,AA==" {
+					t.Fatalf("image-capable model lost the tool image relay: %s", gotBody)
+				}
 			}
 		})
 	}

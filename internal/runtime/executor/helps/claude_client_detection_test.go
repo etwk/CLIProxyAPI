@@ -36,6 +36,7 @@ func measuredClaudeCodeHelperHeaders(betaProfile string) http.Header {
 		"Anthropic-Version": {"2023-06-01"},
 		"Anthropic-Dangerous-Direct-Browser-Access": {"true"},
 		"X-Claude-Code-Session-Id":                  {"11111111-2222-4333-8444-555555555555"},
+		"X-Client-Request-Id":                       {"66666666-7777-4888-8999-aaaaaaaaaaaa"},
 		"X-Stainless-Lang":                          {"js"},
 		"X-Stainless-Runtime":                       {"node"},
 		"X-Stainless-Package-Version":               {profile.PackageVersion},
@@ -52,31 +53,6 @@ func measuredClaudeCodeHelperHeaders(betaProfile string) http.Header {
 		}
 	}
 	return canonical
-}
-
-// measuredClaudeCodeLegacyHelperHeaders builds the 2.1.220 helper envelope:
-// UUID request id on both shapes, async and the full compression set only on
-// the structured helper, gzip only on the minimal probe.
-func measuredClaudeCodeLegacyHelperHeaders(betaProfile string, structured bool) http.Header {
-	headers := measuredClaudeCodeHelperHeaders(betaProfile)
-	headers.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
-	headers.Set("X-Stainless-Package-Version", "0.94.0")
-	headers.Set("X-Stainless-Runtime-Version", "v26.3.0")
-	headers.Set("X-Client-Request-Id", "66666666-7777-4888-8999-aaaaaaaaaaaa")
-	if structured {
-		headers.Set("X-Stainless-Async", "async")
-	} else {
-		headers.Set("Accept-Encoding", "gzip")
-	}
-	return headers
-}
-
-func legacyClaudeBaselineConfig() *config.Config {
-	return &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
-		UserAgent:      "claude-cli/2.1.220 (external, cli)",
-		PackageVersion: "0.94.0",
-		RuntimeVersion: "v26.3.0",
-	}}
 }
 
 func measuredClaudeCodeMinimalHelperPayload() []byte {
@@ -214,13 +190,6 @@ func TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers(t *testing.T) {
 			payload: measuredClaudeCodeStructuredHelperPayload(),
 		},
 		{
-			// Captured 2026-09-02 from Claude Code 2.1.258: the session-title helper
-			// with the account's advisor feature flag on and no cache diagnostics.
-			name:    "structured title helper with advisor on 2.1.258",
-			beta:    claudeCodeHelperBetaProfile(true, "advisor-tool-2026-03-01", "structured-outputs-2025-12-15"),
-			payload: measuredClaudeCodeStructuredHelperPayload(),
-		},
-		{
 			name:    "structured title helper with fallback credit",
 			beta:    claudeCodeHelperBetaProfile(true, "structured-outputs-2025-12-15", "fallback-credit-2026-06-01"),
 			payload: measuredClaudeCodeStructuredHelperPayload(),
@@ -248,94 +217,6 @@ func TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers(t *testing.T) {
 			}
 			if detection.BetasPresent {
 				t.Fatalf("claude-code beta signal = true, want helper profile to remain separate: %#v", detection)
-			}
-		})
-	}
-}
-
-func TestClaudeBaselineUsesLegacyWire(t *testing.T) {
-	if ClaudeBaselineUsesLegacyWire(&config.Config{}) {
-		t.Fatal("default baseline reported as legacy wire")
-	}
-	if ClaudeBaselineUsesLegacyWire(nil) {
-		t.Fatal("nil config reported as legacy wire")
-	}
-	if !ClaudeBaselineUsesLegacyWire(legacyClaudeBaselineConfig()) {
-		t.Fatal("2.1.220 baseline not reported as legacy wire")
-	}
-}
-
-// TestDetectClaudeCodeRequestHelperTransportFollowsConfiguredBaseline pins the
-// envelope selection: a baseline pinned to 2.1.220 accepts the 2.1.220 helper
-// transport and rejects the 2.1.258 one, and the default baseline does the
-// reverse.
-func TestDetectClaudeCodeRequestHelperTransportFollowsConfiguredBaseline(t *testing.T) {
-	structuredBeta := claudeCodeHelperBetaProfile(true, "structured-outputs-2025-12-15")
-	tests := []struct {
-		name    string
-		cfg     *config.Config
-		headers http.Header
-		payload []byte
-		want    bool
-	}{
-		{
-			name:    "legacy baseline accepts legacy minimal helper",
-			cfg:     legacyClaudeBaselineConfig(),
-			headers: measuredClaudeCodeLegacyHelperHeaders(claudeCodeHelperBetaProfile(true), false),
-			payload: measuredClaudeCodeMinimalHelperPayload(),
-			want:    true,
-		},
-		{
-			name:    "legacy baseline accepts legacy structured helper",
-			cfg:     legacyClaudeBaselineConfig(),
-			headers: measuredClaudeCodeLegacyHelperHeaders(structuredBeta, true),
-			payload: measuredClaudeCodeStructuredHelperPayload(),
-			want:    true,
-		},
-		{
-			name: "legacy baseline rejects the 2.1.258 envelope",
-			cfg:  legacyClaudeBaselineConfig(),
-			headers: func() http.Header {
-				headers := measuredClaudeCodeHelperHeaders(claudeCodeHelperBetaProfile(true))
-				headers.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
-				headers.Set("X-Stainless-Package-Version", "0.94.0")
-				return headers
-			}(),
-			payload: measuredClaudeCodeMinimalHelperPayload(),
-			want:    false,
-		},
-		{
-			name:    "legacy baseline rejects the 2.1.258-only helper beta sequence",
-			cfg:     legacyClaudeBaselineConfig(),
-			headers: measuredClaudeCodeLegacyHelperHeaders(claudeCodeHelperBetaProfilesSince258Structured, true),
-			payload: measuredClaudeCodeStructuredHelperPayload(),
-			want:    false,
-		},
-		{
-			name:    "default baseline accepts the 2.1.258 envelope",
-			cfg:     &config.Config{},
-			headers: measuredClaudeCodeHelperHeaders(claudeCodeHelperBetaProfile(true)),
-			payload: measuredClaudeCodeMinimalHelperPayload(),
-			want:    true,
-		},
-		{
-			name: "default baseline rejects the legacy envelope",
-			cfg:  &config.Config{},
-			headers: func() http.Header {
-				headers := measuredClaudeCodeLegacyHelperHeaders(structuredBeta, true)
-				headers.Set("User-Agent", defaultClaudeFingerprintUserAgent)
-				headers.Set("X-Stainless-Package-Version", defaultClaudeFingerprintPackageVersion)
-				return headers
-			}(),
-			payload: measuredClaudeCodeStructuredHelperPayload(),
-			want:    false,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			detection := DetectClaudeCodeRequest(test.headers, test.payload, false, test.cfg)
-			if detection.HelperProfile != test.want || detection.Confirmed != test.want {
-				t.Fatalf("detection = %#v, want helper profile %v", detection, test.want)
 			}
 		})
 	}
@@ -399,9 +280,9 @@ func TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers(t *testing.T) {
 			payload: minimalPayload,
 		},
 		{
-			name: "unexpected request id",
+			name: "invalid request id",
 			mutate: func(headers http.Header) {
-				headers.Set("X-Client-Request-Id", "66666666-7777-4888-8999-aaaaaaaaaaaa")
+				headers.Set("X-Client-Request-Id", "not-a-uuid")
 			},
 			payload: minimalPayload,
 		},
