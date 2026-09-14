@@ -73,7 +73,7 @@ func TestCodexExecutorAstraPreservesNativeRequest(t *testing.T) {
 			}
 			req := cliproxyexecutor.Request{
 				Model:   "gpt-6-astra",
-				Payload: []byte(`{"model":"gpt-6-astra","reasoning":{"effort":"ultra"},"input":[{"type":"message","role":"user","content":"hello"},{"type":"configuration_update","reasoning":{"effort":"max"}}],"tools":[{"type":"function","name":"lookup","description":"Look up a value","parameters":{"type":"object","properties":{}},"async":true}]}`),
+				Payload: []byte(`{"model":"gpt-6-astra","reasoning":{"effort":"max"},"input":[{"type":"message","role":"user","content":"hello"},{"type":"configuration_update","reasoning":{"effort":"max"}}],"tools":[{"type":"function","name":"lookup","description":"Look up a value","parameters":{"type":"object","properties":{}},"async":true}]}`),
 			}
 			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Stream: stream}
 			if stream {
@@ -92,7 +92,7 @@ func TestCodexExecutorAstraPreservesNativeRequest(t *testing.T) {
 			body := <-captured
 			for path, want := range map[string]string{
 				"model":                    "gpt-6-astra",
-				"reasoning.effort":         "ultra",
+				"reasoning.effort":         "max",
 				"input.1.type":             "configuration_update",
 				"input.1.reasoning.effort": "max",
 				"tools.0.async":            "true",

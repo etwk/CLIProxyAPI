@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -181,7 +180,7 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 			log.Warnf("models parse failed from %s: %v", url, err)
 			continue
 		}
-		normalizeKnownModelCapabilities(&parsed)
+		normalizeClaudeFable51Capabilities(&parsed)
 		if err := validateModelsCatalog(&parsed); err != nil {
 			log.Warnf("models validate failed from %s: %v", url, err)
 			continue
@@ -310,7 +309,7 @@ func loadModelsFromBytes(data []byte, source string) error {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return fmt.Errorf("%s: decode models catalog: %w", source, err)
 	}
-	normalizeKnownModelCapabilities(&parsed)
+	normalizeClaudeFable51Capabilities(&parsed)
 	if err := validateModelsCatalog(&parsed); err != nil {
 		return fmt.Errorf("%s: validate models catalog: %w", source, err)
 	}
@@ -321,9 +320,9 @@ func loadModelsFromBytes(data []byte, source string) error {
 	return nil
 }
 
-// normalizeKnownModelCapabilities preserves verified capabilities that are not
+// normalizeClaudeFable51Capabilities preserves verified capabilities that are not
 // yet represented by the upstream catalog, for embedded loads and remote refreshes.
-func normalizeKnownModelCapabilities(data *staticModelsJSON) {
+func normalizeClaudeFable51Capabilities(data *staticModelsJSON) {
 	if data == nil {
 		return
 	}
@@ -335,22 +334,6 @@ func normalizeKnownModelCapabilities(data *staticModelsJSON) {
 			DynamicAllowed: true,
 			AlwaysOn:       true,
 			Levels:         []string{"low", "medium", "high", "xhigh", "max"},
-		}
-	}
-	for _, models := range [][]*ModelInfo{data.CodexTeam, data.CodexPlus, data.CodexPro} {
-		for _, model := range models {
-			if model == nil || model.ID != "gpt-6-astra" {
-				continue
-			}
-			if model.Thinking == nil {
-				model.Thinking = &ThinkingSupport{}
-			}
-			if len(model.Thinking.Levels) == 0 {
-				model.Thinking.Levels = []string{"low", "medium", "high", "xhigh", "max"}
-			}
-			if !slices.Contains(model.Thinking.Levels, "ultra") {
-				model.Thinking.Levels = append(model.Thinking.Levels, "ultra")
-			}
 		}
 	}
 }

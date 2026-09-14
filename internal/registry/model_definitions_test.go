@@ -23,7 +23,7 @@ func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
 	}
 }
 
-func TestCodexChannelsAdvertiseAstraUltraReasoning(t *testing.T) {
+func TestCodexChannelsAdvertiseAstraNativeReasoning(t *testing.T) {
 	channels := map[string]func() []*ModelInfo{
 		"codex-team": GetCodexTeamModels,
 		"codex-plus": GetCodexPlusModels,
@@ -38,12 +38,17 @@ func TestCodexChannelsAdvertiseAstraUltraReasoning(t *testing.T) {
 				if model.Thinking == nil {
 					t.Fatal("gpt-6-astra has no thinking metadata")
 				}
+				hasMax := false
 				for _, level := range model.Thinking.Levels {
 					if level == "ultra" {
-						return
+						t.Fatal("Astra's native API rejects ultra; keep the client option separate")
 					}
+					hasMax = hasMax || level == "max"
 				}
-				t.Fatalf("gpt-6-astra thinking levels = %v, want ultra support", model.Thinking.Levels)
+				if !hasMax {
+					t.Fatalf("gpt-6-astra thinking levels = %v, want max support", model.Thinking.Levels)
+				}
+				return
 			}
 			t.Fatal("gpt-6-astra is missing")
 		})

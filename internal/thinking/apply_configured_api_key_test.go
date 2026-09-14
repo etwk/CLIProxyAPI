@@ -83,14 +83,14 @@ func TestApplyThinkingWithModelInfoMapsResponsesToCodexHighIntent(t *testing.T) 
 	}
 }
 
-func TestApplyThinkingWithModelInfoPreservesAstraUltraEffort(t *testing.T) {
+func TestApplyThinkingWithModelInfoPreservesExplicitUltraCapability(t *testing.T) {
 	modelInfo := &registry.ModelInfo{
-		ID:       "gpt-6-astra",
+		ID:       "custom-ultra-model",
 		Type:     "openai",
 		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
 	}
 	body := []byte(`{"reasoning":{"effort":"ultra"}}`)
-	out, err := thinking.ApplyThinkingWithModelInfo(body, body, "gpt-6-astra", "openai-response", "codex", "codex", modelInfo)
+	out, err := thinking.ApplyThinkingWithModelInfo(body, body, "custom-ultra-model", "openai-response", "codex", "codex", modelInfo)
 	if err != nil {
 		t.Fatalf("ApplyThinkingWithModelInfo() error = %v", err)
 	}
@@ -109,6 +109,22 @@ func TestApplyThinkingWithModelInfoKeepsSameFamilyValidationStrict(t *testing.T)
 	out, err := thinking.ApplyThinkingWithModelInfo(body, body, "openai-upstream", "openai", "openai", "openai", modelInfo)
 	if err == nil {
 		t.Fatalf("ApplyThinkingWithModelInfo() error = nil, want unsupported xhigh error; body=%s", out)
+	}
+}
+
+func TestAstraRejectsUltraBodyAndSuffixWithoutDowngrading(t *testing.T) {
+	for _, tc := range []struct{ model, body string }{
+		{"gpt-6-astra", `{"reasoning":{"effort":"ultra"}}`},
+		{"gpt-6-astra(ultra)", `{}`},
+	} {
+		_, err := thinking.ApplyThinking([]byte(tc.body), tc.model, "openai-response", "codex", "codex")
+		if err == nil {
+			t.Fatalf("%s accepted unsupported ultra effort", tc.model)
+		}
+	}
+	out, err := thinking.ApplyThinking([]byte(`{"reasoning":{"effort":"max"}}`), "gpt-6-astra", "openai-response", "codex", "codex")
+	if err != nil || gjson.GetBytes(out, "reasoning.effort").String() != "max" {
+		t.Fatalf("Astra max effort = %s, error = %v", out, err)
 	}
 }
 

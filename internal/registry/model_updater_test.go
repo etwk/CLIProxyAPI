@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -24,7 +23,7 @@ func TestNormalizeClaudeFable51Capabilities(t *testing.T) {
 		{ID: "other-claude-model", Thinking: otherThinking},
 	}}
 
-	normalizeKnownModelCapabilities(catalog)
+	normalizeClaudeFable51Capabilities(catalog)
 
 	fableThinking := catalog.Claude[0].Thinking
 	if fableThinking == nil || !fableThinking.AlwaysOn || !fableThinking.DynamicAllowed {
@@ -47,7 +46,7 @@ func TestNormalizeClaudeFable51Capabilities(t *testing.T) {
 	}
 }
 
-func TestModelCatalogLoadsPreserveForkCapabilities(t *testing.T) {
+func TestModelCatalogLoadsPreserveFableAndNativeAstraCapabilities(t *testing.T) {
 	// Match the remote catalog before its missing capabilities are corrected.
 	const raw = `{
 		"claude":[{"id":"claude-fable-5-1","thinking":{"min":1024,"max":128000,"zero_allowed":true,"levels":["low","medium","high","xhigh","max"]}}],
@@ -55,7 +54,7 @@ func TestModelCatalogLoadsPreserveForkCapabilities(t *testing.T) {
 		"codex-plus":[{"id":"gpt-6-astra","thinking":{"levels":["low","medium","high","xhigh","max"]},"native_capabilities":{"web_search":true}}],
 		"codex-pro":[{"id":"gpt-6-astra","thinking":{"levels":["low","medium","high","xhigh","max"]},"native_capabilities":{"web_search":true}}]
 	}`
-	wantLevels := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
 	assertCapabilities := func(t *testing.T, catalog *staticModelsJSON) {
 		t.Helper()
 		fable := catalog.Claude[0].Thinking
@@ -65,7 +64,7 @@ func TestModelCatalogLoadsPreserveForkCapabilities(t *testing.T) {
 		for _, models := range [][]*ModelInfo{catalog.CodexTeam, catalog.CodexPlus, catalog.CodexPro} {
 			astra := models[0]
 			if astra.Thinking == nil || !slices.Equal(astra.Thinking.Levels, wantLevels) {
-				t.Fatalf("Astra lost ultra support: %+v", astra.Thinking)
+				t.Fatalf("Astra native capabilities changed: %+v", astra.Thinking)
 			}
 			if astra.NativeCapabilities == nil || astra.NativeCapabilities.WebSearch == nil || !*astra.NativeCapabilities.WebSearch {
 				t.Fatal("normalization removed native web-search metadata")
@@ -105,33 +104,4 @@ func TestModelCatalogLoadsPreserveForkCapabilities(t *testing.T) {
 			assertCapabilities(t, catalog)
 		}
 	})
-}
-
-func TestNormalizeAstraPreservesCatalogFieldsAndOtherModels(t *testing.T) {
-	for _, raw := range []string{
-		`{"id":"gpt-6-astra"}`,
-		`{"id":"gpt-6-astra","thinking":{"levels":[]}}`,
-		`{"id":"gpt-6-astra","thinking":{"levels":["high","max","ultra","future"],"dynamic_allowed":true}}`,
-	} {
-		var astra ModelInfo
-		if err := json.Unmarshal([]byte(raw), &astra); err != nil {
-			t.Fatal(err)
-		}
-		other := &ModelInfo{ID: "gpt-other", Thinking: &ThinkingSupport{Levels: []string{"high"}}}
-		otherThinking := other.Thinking
-		freeAstra := &ModelInfo{ID: "gpt-6-astra"}
-		catalog := &staticModelsJSON{CodexPro: []*ModelInfo{&astra, other}, CodexFree: []*ModelInfo{freeAstra}}
-		normalizeKnownModelCapabilities(catalog)
-		levels := slices.Clone(astra.Thinking.Levels)
-		normalizeKnownModelCapabilities(catalog)
-		if !slices.Contains(levels, "ultra") || !slices.Equal(levels, astra.Thinking.Levels) {
-			t.Fatalf("normalization must add ultra once: %v -> %v", levels, astra.Thinking.Levels)
-		}
-		if slices.Contains(levels, "future") && !astra.Thinking.DynamicAllowed {
-			t.Fatal("normalization overwrote unrelated thinking fields")
-		}
-		if other.Thinking != otherThinking || !slices.Equal(other.Thinking.Levels, []string{"high"}) || freeAstra.Thinking != nil {
-			t.Fatal("normalization changed another model or plan")
-		}
-	}
 }
