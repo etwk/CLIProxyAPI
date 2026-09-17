@@ -1444,7 +1444,7 @@ func restoreClaudeOAuthToolNamesFromStreamLine(line []byte, reverseMap map[strin
 // typed Anthropic tools remain unchanged.
 //
 // It operates on tools[].name, tool_choice.name, and all declared
-// tool_use/tool_reference references in messages.
+// tool_use/tool_reference references and mid-conversation tool changes in messages.
 //
 // The returned map is keyed on the upstream name and maps to the client-supplied
 // original name. Callers MUST pass this map to the reverse
@@ -1662,6 +1662,19 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 							return false
 						}
 						recordRename(toolName, newName)
+					}
+				case "tool_addition", "tool_removal":
+					if part.Get("tool.type").String() != "tool_reference" {
+						return true
+					}
+					nameResult := part.Get("tool.name")
+					name := nameResult.String()
+					if newName, renamed := rewriteName(name); renamed {
+						if !appendStringEdit(nameResult, newName) {
+							validOffsets = false
+							return false
+						}
+						recordRename(name, newName)
 					}
 				case "tool_result":
 					nestedContent := part.Get("content")
@@ -1910,6 +1923,16 @@ func remapOAuthToolNamesWithOptionsLegacy(body []byte, mcpAliases claudeMCPAlias
 						path := fmt.Sprintf("messages.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int())
 						body, _ = sjson.SetBytes(body, path, newName)
 						recordRename(toolName, newName)
+					}
+				case "tool_addition", "tool_removal":
+					if part.Get("tool.type").String() != "tool_reference" {
+						return true
+					}
+					name := part.Get("tool.name").String()
+					if newName, renamed := rewriteName(name); renamed {
+						path := fmt.Sprintf("messages.%d.content.%d.tool.name", msgIndex.Int(), contentIndex.Int())
+						body, _ = sjson.SetBytes(body, path, newName)
+						recordRename(name, newName)
 					}
 				case "tool_result":
 					// Handle nested tool_reference blocks inside tool_result.content[]

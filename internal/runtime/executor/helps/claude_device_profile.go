@@ -32,8 +32,8 @@ const (
 
 var (
 	claudeCLIVersionPattern     = regexp.MustCompile(`^claude-cli/(\d+)\.(\d+)\.(\d+)`)
-	claudePackageVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
-	claudeRuntimeVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+	claudePackageVersionPattern = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)$`)
+	claudeRuntimeVersionPattern = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
 
 	claudeDeviceProfileCache            = make(map[string]claudeDeviceProfileCacheEntry)
 	claudeDeviceProfileCacheMu          sync.RWMutex
@@ -183,7 +183,11 @@ func mapStainlessArch() string {
 }
 
 func parseClaudeCLIVersion(userAgent string) (claudeCLIVersion, bool) {
-	matches := claudeCLIVersionPattern.FindStringSubmatch(strings.TrimSpace(userAgent))
+	return parseClaudeVersion(strings.TrimSpace(userAgent), claudeCLIVersionPattern)
+}
+
+func parseClaudeVersion(value string, pattern *regexp.Regexp) (claudeCLIVersion, bool) {
+	matches := pattern.FindStringSubmatch(value)
 	if len(matches) != 4 {
 		return claudeCLIVersion{}, false
 	}
@@ -202,6 +206,15 @@ func parseClaudeCLIVersion(userAgent string) (claudeCLIVersion, bool) {
 	return claudeCLIVersion{major: major, minor: minor, patch: patch}, true
 }
 
+func compareClaudeSoftwareVersions(candidate, baseline string, pattern *regexp.Regexp) (int, bool) {
+	candidateVersion, candidateOK := parseClaudeVersion(candidate, pattern)
+	baselineVersion, baselineOK := parseClaudeVersion(baseline, pattern)
+	if !candidateOK || !baselineOK {
+		return 0, false
+	}
+	return candidateVersion.Compare(baselineVersion), true
+}
+
 func shouldUpgradeClaudeDeviceProfile(candidate, current ClaudeDeviceProfile) bool {
 	if candidate.UserAgent == "" || !candidate.hasVersion {
 		return false
@@ -209,11 +222,19 @@ func shouldUpgradeClaudeDeviceProfile(candidate, current ClaudeDeviceProfile) bo
 	if current.UserAgent == "" || !current.hasVersion {
 		return true
 	}
-	return candidate.version.Compare(current.version) > 0
+	if comparison := candidate.version.Compare(current.version); comparison != 0 {
+		return comparison > 0
+	}
+	// SDK and runtime updates can arrive independently of a CLI release. Keep a
+	// complete observed tuple, without regressing either component or synthesizing one.
+	packageComparison, packageOK := compareClaudeSoftwareVersions(candidate.PackageVersion, current.PackageVersion, claudePackageVersionPattern)
+	runtimeComparison, runtimeOK := compareClaudeSoftwareVersions(candidate.RuntimeVersion, current.RuntimeVersion, claudeRuntimeVersionPattern)
+	return packageOK && runtimeOK && packageComparison >= 0 && runtimeComparison >= 0 &&
+		(packageComparison > 0 || runtimeComparison > 0)
 }
 
 func plausibleClaudeCLIVersion(candidate, baseline claudeCLIVersion) bool {
-	return candidate.Compare(baseline) == 0
+	return candidate.Compare(baseline) >= 0 && candidate.major-baseline.major <= 1
 }
 
 func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) bool {
@@ -223,9 +244,10 @@ func meetsClaudeDeviceProfileBaseline(candidate, baseline ClaudeDeviceProfile) b
 	if baseline.UserAgent == "" || !baseline.hasVersion {
 		return false
 	}
+	packageComparison, packageOK := compareClaudeSoftwareVersions(candidate.PackageVersion, baseline.PackageVersion, claudePackageVersionPattern)
+	runtimeComparison, runtimeOK := compareClaudeSoftwareVersions(candidate.RuntimeVersion, baseline.RuntimeVersion, claudeRuntimeVersionPattern)
 	return plausibleClaudeCLIVersion(candidate.version, baseline.version) &&
-		candidate.PackageVersion == baseline.PackageVersion &&
-		candidate.RuntimeVersion == baseline.RuntimeVersion
+		packageOK && packageComparison >= 0 && runtimeOK && runtimeComparison >= 0
 }
 
 func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
@@ -235,7 +257,7 @@ func pinClaudeDeviceProfilePlatform(profile, baseline ClaudeDeviceProfile) Claud
 }
 
 // normalizeClaudeDeviceProfile pins stabilized profiles to the configured platform
-// and replaces any software tuple that does not exactly match the measured baseline.
+// and replaces software tuples below the configured version floors.
 func normalizeClaudeDeviceProfile(profile, baseline ClaudeDeviceProfile) ClaudeDeviceProfile {
 	profile = pinClaudeDeviceProfilePlatform(profile, baseline)
 	if !meetsClaudeDeviceProfileBaseline(profile, baseline) {
@@ -614,8 +636,14 @@ func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg
 	}
 
 	if confirmedClaudeCode {
-		miscEnsure("X-Stainless-Runtime-Version", profile.RuntimeVersion, func(value string) bool { return value == profile.RuntimeVersion })
-		miscEnsure("X-Stainless-Package-Version", profile.PackageVersion, func(value string) bool { return value == profile.PackageVersion })
+		miscEnsure("X-Stainless-Runtime-Version", profile.RuntimeVersion, func(value string) bool {
+			comparison, ok := compareClaudeSoftwareVersions(value, profile.RuntimeVersion, claudeRuntimeVersionPattern)
+			return ok && comparison >= 0
+		})
+		miscEnsure("X-Stainless-Package-Version", profile.PackageVersion, func(value string) bool {
+			comparison, ok := compareClaudeSoftwareVersions(value, profile.PackageVersion, claudePackageVersionPattern)
+			return ok && comparison >= 0
+		})
 		miscEnsure("X-Stainless-Os", mapStainlessOS(), nil)
 		miscEnsure("X-Stainless-Arch", mapStainlessArch(), nil)
 		if clientUA := strings.TrimSpace(ginHeaders.Get("User-Agent")); plausibleClaudeCodeUserAgent(clientUA, cfg) {
